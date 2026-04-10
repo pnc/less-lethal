@@ -31,3 +31,15 @@ The tests boot a real VM under TCG emulation (~90s without KVM, faster with
 `/dev/kvm` available). They use `--subnet 192.168.101` to avoid colliding with
 the default `192.168.100.0/24` subnet, which matters when the test host is
 itself a VM on that subnet.
+
+On macOS, the test skips automatically if `socket_vmnet` is not running.
+
+There is also a fast unit test suite for the filter logic (no VM required):
+
+```bash
+uv run pytest tests/test_filter.py -v
+```
+
+## Tooling
+
+Use **uv** for all Python tasks. Do not use pip, conda, or pipx.

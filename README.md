@@ -1,54 +1,72 @@
 # Agent VM
 
-A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side mitmproxy, giving full visibility and control over what the guest can reach. Runs on macOS (socket_vmnet + HVF) and Linux (TAP/bridge + TCG/KVM).
+A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (socket\_vmnet + HVF) and Linux (TAP/bridge + TCG/KVM).
 
-## Usage
+## Why: the "lethal trifecta"
+
+Simon Willison describes a ["lethal trifecta"](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) when AI agents combine access to private data, exposure to untrusted content, and the ability to communicate externally — creating a path from prompt injection to data exfiltration. More broadly, an agent with these three capabilities is dangerous:
+
+1. **Code execution** — present in this VM
+2. **Autonomy** — present in this VM
+3. Internet access — constrained by the allowlist proxy
+
+This VM provides (1) and (2) but constrains (3): all traffic passes through a human-curated allowlist, so the operator approves every new endpoint.
+
+## Quick start
 
 **macOS prerequisites:** `brew install qemu socket_vmnet cdrtools mitmproxy`
 
 **Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage iptables` (or x86 equivalents). Requires sudo for TAP/bridge setup.
 
 ```bash
-# Start mitmproxy and QEMU
-./vm.py start
-
-# SSH in (from another terminal)
-./vm.py ssh
-
-# Run a command in the VM without an interactive shell
-./vm.py ssh -- ls /tmp
-
-# Destroy ephemeral state and start fresh (base image is kept in .images/)
-./vm.py reset && ./vm.py start
-
-# Pass extra cloud-init config at boot (e.g. install additional packages)
-./vm.py start --extra-user-data my-extra.yaml
+./vm.py start          # start mitmproxy + QEMU
+./vm.py ssh            # SSH in (from another terminal)
+./vm.py reset          # destroy ephemeral state, keep base image
 ```
 
 Files in `shared/` on the host appear at `~/shared` inside the guest.
 
-## Traffic control
+## Network filter
 
-Edit `filter.py` to control what the VM can reach. By default it blocks everything except common Debian/Python package repositories. The filter is a standard [mitmproxy addon](https://docs.mitmproxy.org/stable/addons-overview/) — mitmproxy reloads it on change.
+All outbound HTTP/HTTPS traffic passes through the proxy. Requests that don't match the allowlist are rejected with **HTTP 418** — a deliberately unusual status code so proxy blocks are never confused with real server errors.
 
-Proxy traffic is logged to `.vm/mitmdump.log`:
+### Two layers
 
-```bash
-tail -f .vm/mitmdump.log
+1. **Trusted domains** (in `filter.py`): system infrastructure that the VM needs to function — Debian/Ubuntu repos, PyPI, and the mitmproxy CA endpoint. All methods and paths are allowed.
+
+2. **User rules** (in `allowlist.txt`): per-method, per-URL patterns you add for your workload. Each rule is one line:
+
+```
+METHOD https://hostname/path/pattern
 ```
 
-## Running the test suite
+Wildcards (`*`) are allowed in the path but **not** in the hostname. The proxy reloads `allowlist.txt` on every request, so changes take effect immediately.
 
-The test suite boots the VM end-to-end and verifies networking works correctly through mitmproxy.
+### Writing safe rules
+
+- **Be specific.** `POST https://api.example.com/v1/messages` is better than `POST https://api.example.com/*`.
+- **Scope wildcards to a prefix.** If the API uses `/v1/`, write `GET https://api.example.com/v1/*` — not `/*`.
+- **Justify every wildcard.** Ask: can I enumerate the paths instead? Only use `*` when path segments genuinely vary (per-request IDs, pagination tokens, etc.).
+- **Separate methods.** GET and POST are different rules. Don't grant POST when you only need GET.
+
+### Monitoring
+
+Proxy traffic is logged to `.vm/mitmdump.log` and blocked requests are appended to `.vm/blocked.jsonl`:
 
 ```bash
-uv run pytest tests/test_e2e.py -v -s
+tail -f .vm/mitmdump.log          # all proxy traffic
+cat .vm/blocked.jsonl | jq .      # blocked requests
 ```
 
-This takes ~90 seconds without KVM (TCG software emulation). It:
-- Resets VM state and boots a fresh VM
-- Verifies cloud-init completes cleanly
-- Verifies `curl http://pypi.org` and `curl https://pypi.org` work through the proxy
-- Verifies blocked domains (e.g. `cisco.com`) return a 403 from `filter.py`
+## Credentials and the shared directory
 
-On macOS, the test skips automatically if `socket_vmnet` is not running.
+The `shared/` directory is mounted read-write inside the guest. Be deliberate about what you place there.
+
+- **API keys:** Only add keys the agent actually needs. Prefer scoped, short-lived tokens over long-lived admin keys. Revoke them when the session is over.
+- **Git credentials: do not provide them to the VM.** The agent can commit inside the VM, but push/pull operations should be performed on the host in the `shared/` directory. This keeps git credentials (SSH keys, tokens) out of the sandbox entirely.
+- **Secrets files:** Never place `.env` files, service account JSON, or other broad credential bundles in `shared/` unless you have verified every key in them is safe to expose to the agent.
+- **Cloning repos:** When giving the agent a repo to work on, `git clone` it fresh into `shared/` rather than copying or moving an existing checkout. Copied directories carry gitignored files (`.env`, credentials, local config) that a clone won't have.
+
+## Development
+
+See [HACKING.md](HACKING.md) for test suite instructions and development notes.
