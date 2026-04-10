@@ -10,6 +10,7 @@ BOOT_TIMEOUT is set generously to accommodate that.
 """
 
 import os
+import socket as _socket
 import subprocess
 import sys
 import time
@@ -150,14 +151,25 @@ def running_vm():
         except (subprocess.CalledProcessError, FileNotFoundError):
             pytest.skip("Homebrew not found — cannot locate socket_vmnet")
         socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
-        if not socket_path.is_socket():
-            pytest.skip(
-                "socket_vmnet not running for test subnet — start it with:\n"
-                f"  sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet "
-                f"--vmnet-mode=host --vmnet-gateway={TEST_SUBNET}.1 "
-                f"--vmnet-dhcp-end={TEST_SUBNET}.254 --vmnet-mask=255.255.255.0 "
-                f"{socket_path}"
-            )
+        _skip_msg = (
+            "socket_vmnet not running for test subnet — start it with:\n"
+            f"  sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet "
+            f"--vmnet-mode=host --vmnet-gateway={TEST_SUBNET}.1 "
+            f"--vmnet-dhcp-end={TEST_SUBNET}.254 --vmnet-mask=255.255.255.0 "
+            f"{socket_path}"
+        )
+        if not socket_path.exists():
+            pytest.skip(_skip_msg)
+        # A stale socket file can linger after the daemon is killed.
+        # Try to connect to verify the daemon is actually responsive.
+        _sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            _sock.settimeout(2)
+            _sock.connect(str(socket_path))
+        except (ConnectionRefusedError, OSError):
+            pytest.skip(_skip_msg)
+        finally:
+            _sock.close()
 
     # Kill any stray processes from a previous test run
     _kill_all_vm_processes()
@@ -202,6 +214,18 @@ def running_vm():
         stdout=console_f,
         stderr=console_f,
     )
+
+    # Give vm.py a moment to fail fast (missing socket_vmnet, subnet
+    # mismatch, port conflict, etc.) before entering the SSH probe loop.
+    # Without this, a setup failure just looks like an SSH timeout.
+    time.sleep(2)
+    if vm_proc.poll() is not None:
+        console_f.flush()
+        _dump_logs()
+        pytest.fail(
+            f"vm.py exited immediately (rc={vm_proc.returncode}). "
+            "See console log above."
+        )
 
     try:
         _wait_for_ssh(vm_proc, timeout=BOOT_TIMEOUT)
