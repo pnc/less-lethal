@@ -20,6 +20,11 @@ bootcmd:
         wget -qO /usr/local/share/ca-certificates/mitmproxy.crt http://mitm.it/cert/pem
       update-ca-certificates
     fi
+  # Disable initramfs rebuilds — this is an ephemeral VM that is never
+  # rebooted.  The generic kernel's mkinitramfs takes 2+ minutes under
+  # TCG because it copies hundreds of driver modules.
+  - dpkg-divert --local --rename --add /usr/sbin/update-initramfs
+  - ln -sf /bin/true /usr/sbin/update-initramfs
 
 write_files:
   - path: /etc/apt/apt.conf.d/90proxy
