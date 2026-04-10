@@ -130,28 +130,26 @@ class DarwinBackend(Backend):
             sys.exit("socket_vmnet not found. Install via: brew install socket_vmnet")
 
         socket_dir = socket_path.parent
-        owner = (os.environ.get("SUDO_USER") or os.environ.get("USER") or
-                 subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip())
-
-        print("Starting socket_vmnet (requires sudo)...")
-        subprocess.run(["sudo", "mkdir", "-p", str(socket_dir)], check=True)
-        subprocess.run(["sudo", "chown", owner, str(socket_dir)], check=True)
-        subprocess.run(["sudo", "chmod", "700", str(socket_dir)], check=True)
-
-        subprocess.Popen([
-            "sudo", str(socket_vmnet),
-            "--vmnet-mode=host",
-            "--vmnet-gateway=192.168.100.1",
-            "--vmnet-dhcp-end=192.168.100.254",
-            "--vmnet-mask=255.255.255.0",
-            str(socket_path),
-        ])
-
-        for _ in range(20):
-            if socket_path.is_socket():
-                return
-            time.sleep(0.5)
-        sys.exit("socket_vmnet failed to start (socket not created after 10s)")
+        sys.exit(
+            f"socket_vmnet is not running (socket not found at {socket_path}).\n"
+            "\n"
+            "Start it in a separate terminal before running vm.py:\n"
+            "\n"
+            f"  sudo mkdir -p {socket_dir}\n"
+            f"  sudo chown $USER {socket_dir}\n"
+            f"  sudo chmod 700 {socket_dir}\n"
+            f"  sudo {socket_vmnet} \\\n"
+            f"      --vmnet-mode=host \\\n"
+            f"      --vmnet-gateway=192.168.100.1 \\\n"
+            f"      --vmnet-dhcp-end=192.168.100.254 \\\n"
+            f"      --vmnet-mask=255.255.255.0 \\\n"
+            f"      {socket_path}\n"
+            "\n"
+            "Verify the socket exists before continuing:\n"
+            f"  ls -la {socket_path}\n"
+            "\n"
+            "socket_vmnet is open source: https://github.com/lima-vm/socket_vmnet"
+        )
 
     def qemu_netdev_arg(self) -> str:
         return "socket,id=net0,fd=3"

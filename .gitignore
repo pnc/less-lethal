@@ -1,4 +1,7 @@
 .vm/
+.images/
+shared/*
+!shared/.gitkeep
 .venv/
 __pycache__/
 *.pyc
