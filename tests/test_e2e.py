@@ -151,15 +151,23 @@ def running_vm():
         except (subprocess.CalledProcessError, FileNotFoundError):
             pytest.skip("Homebrew not found — cannot locate socket_vmnet")
         socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
-        _skip_msg = (
-            "socket_vmnet not running for test subnet — start it with:\n"
-            f"  sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet "
-            f"--vmnet-mode=host --vmnet-gateway={TEST_SUBNET}.1 "
-            f"--vmnet-dhcp-end={TEST_SUBNET}.254 --vmnet-mask=255.255.255.0 "
-            f"{socket_path}"
-        )
+        def _skip_no_vmnet() -> None:
+            print(
+                "\n  socket_vmnet is not running for the test subnet.\n"
+                "  Start it in a separate terminal before re-running:\n"
+                "\n"
+                f"    sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet \\\n"
+                f"        --vmnet-mode=host \\\n"
+                f"        --vmnet-gateway={TEST_SUBNET}.1 \\\n"
+                f"        --vmnet-dhcp-end={TEST_SUBNET}.254 \\\n"
+                f"        --vmnet-mask=255.255.255.0 \\\n"
+                f"        {socket_path}\n",
+                file=sys.stderr, flush=True,
+            )
+            pytest.skip("socket_vmnet not running for test subnet")
+
         if not socket_path.exists():
-            pytest.skip(_skip_msg)
+            _skip_no_vmnet()
         # A stale socket file can linger after the daemon is killed.
         # Try to connect to verify the daemon is actually responsive.
         _sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
@@ -167,7 +175,7 @@ def running_vm():
             _sock.settimeout(2)
             _sock.connect(str(socket_path))
         except (ConnectionRefusedError, OSError):
-            pytest.skip(_skip_msg)
+            _skip_no_vmnet()
         finally:
             _sock.close()
 
