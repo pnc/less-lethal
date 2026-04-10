@@ -10,7 +10,6 @@ BOOT_TIMEOUT is set generously to accommodate that.
 """
 
 import os
-import socket as _socket
 import subprocess
 import sys
 import time
@@ -64,6 +63,12 @@ def _vm_ssh(*cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return _vm("ssh", "--subnet", TEST_SUBNET, "--", *cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _sudo(*args: str, check: bool = False, **kwargs) -> subprocess.CompletedProcess:
+    """Run a command via sudo -n, logging the command to stderr."""
+    print(f"  [sudo] {' '.join(args)}", file=sys.stderr, flush=True)
+    return subprocess.run(["sudo", "-n", *args], check=check, **kwargs)
+
+
 def _kill_all_vm_processes() -> None:
     """Kill stray processes from a previous test run.
 
@@ -78,6 +83,8 @@ def _kill_all_vm_processes() -> None:
     subprocess.run(["pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}.*qemu"], capture_output=True)
     # Kill mitmdump on the test port only (not a user's default-port proxy).
     subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"], capture_output=True)
+    # Kill any socket_vmnet daemon for the test subnet (runs as root).
+    _sudo("pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}", capture_output=True)
     time.sleep(2)  # allow ports to be released
 
 
@@ -142,45 +149,58 @@ def running_vm():
 
     All tests in the module share a single VM instance.
     """
-    # On macOS, skip rather than hang if socket_vmnet isn't running.
+    # The test suite never prompts for sudo.  On macOS, socket_vmnet and
+    # pf rules both need root, so we check for cached credentials up front.
     if sys.platform == "darwin":
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+            print(
+                "\n  sudo credentials not cached.  Run:\n\n"
+                "    sudo -v\n\n"
+                "  then re-run the test suite within the sudo timeout.\n",
+                file=sys.stderr, flush=True,
+            )
+            pytest.skip("sudo credentials not cached")
         try:
             brew_prefix = Path(
                 subprocess.check_output(["brew", "--prefix"], text=True).strip()
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             pytest.skip("Homebrew not found — cannot locate socket_vmnet")
-        socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
-        def _skip_no_vmnet() -> None:
-            print(
-                "\n  socket_vmnet is not running for the test subnet.\n"
-                "  Start it in a separate terminal before re-running:\n"
-                "\n"
-                f"    sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet \\\n"
-                f"        --vmnet-mode=host \\\n"
-                f"        --vmnet-gateway={TEST_SUBNET}.1 \\\n"
-                f"        --vmnet-dhcp-end={TEST_SUBNET}.254 \\\n"
-                f"        --vmnet-mask=255.255.255.0 \\\n"
-                f"        {socket_path}\n",
-                file=sys.stderr, flush=True,
-            )
-            pytest.skip("socket_vmnet not running for test subnet")
-
-        if not socket_path.exists():
-            _skip_no_vmnet()
-        # A stale socket file can linger after the daemon is killed.
-        # Try to connect to verify the daemon is actually responsive.
-        _sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        try:
-            _sock.settimeout(2)
-            _sock.connect(str(socket_path))
-        except (ConnectionRefusedError, OSError):
-            _skip_no_vmnet()
-        finally:
-            _sock.close()
+        socket_vmnet_bin = brew_prefix / "opt/socket_vmnet/bin/socket_vmnet"
+        if not socket_vmnet_bin.exists():
+            pytest.skip("socket_vmnet not installed — brew install socket_vmnet")
 
     # Kill any stray processes from a previous test run
     _kill_all_vm_processes()
+
+    # Start socket_vmnet for the test subnet (macOS only).
+    vmnet_proc = None
+    if sys.platform == "darwin":
+        socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
+        _sudo("mkdir", "-p", str(socket_path.parent), capture_output=True)
+        vmnet_proc = subprocess.Popen([
+            "sudo", "-n", str(socket_vmnet_bin),
+            "--vmnet-mode=host",
+            f"--vmnet-gateway={TEST_SUBNET}.1",
+            f"--vmnet-dhcp-end={TEST_SUBNET}.254",
+            "--vmnet-mask=255.255.255.0",
+            str(socket_path),
+        ])
+        print(f"  [sudo] {socket_vmnet_bin.name} (pid {vmnet_proc.pid})",
+              file=sys.stderr, flush=True)
+        # Wait for the socket to appear.
+        for _ in range(30):
+            if socket_path.is_socket():
+                break
+            if vmnet_proc.poll() is not None:
+                pytest.fail(
+                    f"socket_vmnet exited immediately (rc={vmnet_proc.returncode}). "
+                    "Is another instance already running for this subnet?"
+                )
+            time.sleep(0.5)
+        else:
+            vmnet_proc.terminate()
+            pytest.fail("socket_vmnet did not create socket within 15s")
 
     # Start from a known clean state
     _vm("reset", check=True)
@@ -258,6 +278,9 @@ def running_vm():
         vm_proc.kill()
         vm_proc.wait()
     _kill_all_vm_processes()
+    if vmnet_proc is not None:
+        _sudo("kill", str(vmnet_proc.pid), capture_output=True)
+        vmnet_proc.wait(timeout=5)
     console_f.close()
 
 
@@ -357,35 +380,23 @@ def test_host_exposed_ports(running_vm):
     were reachable, a compromised VM could pivot to attack them.
 
     Requires host-side firewall rules (pf on macOS, iptables on Linux).
-    Since the test suite runs with --no-firewall to avoid sudo prompts,
-    this test loads rules non-interactively and skips if sudo credentials
-    aren't cached.
+    The test suite runs with --no-firewall, so this test loads and
+    unloads the rules itself.  sudo credentials are guaranteed cached
+    by the running_vm fixture.
 
     nmap is installed during provisioning via tests/nmap.yaml passed to
     vm.py start --extra-user-data, so no apt-get is needed here.
     """
-    # Load firewall rules non-interactively.  Skip if sudo isn't cached.
-    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
-        print(
-            "\n  Skipping port isolation test — sudo credentials not cached.\n"
-            "  To include this test, run:\n\n"
-            "    sudo -v\n\n"
-            "  then re-run the test suite within the sudo timeout.\n",
-            file=sys.stderr, flush=True,
-        )
-        pytest.skip("sudo credentials not cached (needed for firewall rules)")
-
+    # Load firewall rules for the duration of this test.
+    pf_anchor = "com.apple/agent-vm"
     if sys.platform == "darwin":
-        pf_anchor = "com.apple/agent-vm"
         pf_rules = (
             f"pass in quick proto tcp from {TEST_SUBNET}.2 to {TEST_SUBNET}.1 port {TEST_PROXY_PORT}\n"
             f"block in quick proto tcp from {TEST_SUBNET}.0/24 to {TEST_SUBNET}.1\n"
         )
-        subprocess.run(
-            ["sudo", "-n", "pfctl", "-a", pf_anchor, "-f", "-"],
-            input=pf_rules, text=True, check=True, capture_output=True,
-        )
-        subprocess.run(["sudo", "-n", "pfctl", "-E"], capture_output=True)
+        _sudo("pfctl", "-a", pf_anchor, "-f", "-",
+              input=pf_rules, text=True, check=True, capture_output=True)
+        _sudo("pfctl", "-E", capture_output=True)
 
     # Derive the host IP and proxy port from the VM's proxy env var.
     r = _vm_ssh("bash -lc 'echo $http_proxy'", timeout=10)
@@ -445,10 +456,7 @@ def test_host_exposed_ports(running_vm):
 
     # Clean up firewall rules regardless of assertion outcome.
     if sys.platform == "darwin":
-        subprocess.run(
-            ["sudo", "-n", "pfctl", "-a", pf_anchor, "-F", "all"],
-            capture_output=True,
-        )
+        _sudo("pfctl", "-a", pf_anchor, "-F", "all", capture_output=True)
 
     unexpected = open_ports - {proxy_port}
     assert not unexpected, (

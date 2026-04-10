@@ -6,20 +6,8 @@
 brew install qemu socket_vmnet
 ```
 
-Start socket_vmnet for the test subnet in a separate terminal (persists until
-you stop it):
-
-```bash
-sudo $(brew --prefix)/opt/socket_vmnet/bin/socket_vmnet \
-    --vmnet-mode=host \
-    --vmnet-gateway=192.168.101.1 \
-    --vmnet-dhcp-end=192.168.101.254 \
-    --vmnet-mask=255.255.255.0 \
-    $(brew --prefix)/var/run/socket_vmnet.192.168.101
-```
-
-If socket_vmnet isn't running, all tests skip automatically with the command
-to start it.
+The test suite starts and stops socket_vmnet automatically. No separate
+terminal is needed.
 
 ## Linux test prerequisites
 
@@ -52,15 +40,16 @@ The tests boot a real VM under TCG emulation (~90s without KVM, faster with
 `/dev/kvm` available). They use `--subnet 192.168.101` and `--proxy-port 8091`
 to avoid colliding with a running default VM.
 
-The test suite never prompts for sudo. Four of the five tests require no
-privileges at all. The port-isolation test (`test_host_exposed_ports`) needs
-sudo to load pf/iptables firewall rules; it checks for cached credentials
-via `sudo -n` and skips cleanly if they aren't available. To include it:
+The test suite never prompts for sudo — it uses `sudo -n` (non-interactive)
+throughout and skips all tests if credentials aren't cached. Cache them first:
 
 ```bash
 sudo -v                                  # cache credentials
 uv run pytest tests/test_e2e.py -v -s    # run within the sudo timeout
 ```
+
+All privileged commands are logged to stderr with a `[sudo]` prefix so you
+can see exactly what runs as root.
 
 There is also a fast unit test suite for the filter logic (no VM required):
 
