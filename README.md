@@ -47,7 +47,7 @@ Wildcards (`*`) are allowed in the path but **not** in the hostname. The proxy r
 - **Be specific.** `POST https://api.example.com/v1/messages` is better than `POST https://api.example.com/*`.
 - **Scope wildcards to a prefix.** If the API uses `/v1/`, write `GET https://api.example.com/v1/*` — not `/*`.
 - **Justify every wildcard.** Ask: can I enumerate the paths instead? Only use `*` when path segments genuinely vary (per-request IDs, pagination tokens, etc.).
-- **Separate methods.** GET and POST are different rules. Don't grant POST when you only need GET.
+- **Separate methods.** GET and POST are different rules. Don't grant POST when you only need GET. However, remember that exfiltration can occur using GET (such as using query parameters), so GET isn't always safe. (The best thing to do is to assume compromise by default—credentials and keys you give the VM should be short-lived, two hours or less.)
 
 ### Monitoring
 
