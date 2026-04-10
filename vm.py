@@ -11,6 +11,7 @@ import email.mime.multipart
 import email.mime.text
 import os
 import platform
+import signal
 import shutil
 import subprocess
 import sys
@@ -597,6 +598,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     print()
 
     qemu_proc = backend.launch_qemu(build_qemu_args(backend, memory=args.memory))
+
+    # Propagate SIGTERM to QEMU so that killing vm.py (e.g. from a test
+    # fixture) also stops the QEMU child and releases the TAP device.
+    # Just terminate QEMU and let .wait() return naturally — no sys.exit()
+    # which would raise SystemExit inside the signal handler context.
+    signal.signal(signal.SIGTERM, lambda *_: qemu_proc.terminate())
+
     try:
         qemu_rc = qemu_proc.wait()
     except KeyboardInterrupt:

@@ -72,18 +72,21 @@ def _sudo(*args: str, check: bool = False, **kwargs) -> subprocess.CompletedProc
 def _kill_all_vm_processes() -> None:
     """Kill stray processes from a previous test run.
 
-    Targets the vm.py parent (which has --subnet in its args) rather than
-    broadly killing all qemu-system-* processes, so a user's running VM on
-    the default subnet is not disrupted.  vm.py's finally block propagates
-    SIGTERM to its QEMU and mitmdump children.
+    Targets processes by identifiers unique to this repo/test config so
+    a user's running VM on the default subnet is not disrupted.
     """
+    # vm.py parent (has --subnet in its args).
     subprocess.run(["pkill", "-f", f"vm\\.py.*--subnet.*{TEST_SUBNET}"], capture_output=True)
-    # Also catch orphaned socket_vmnet_client wrappers (macOS) whose
-    # command line includes the subnet-specific socket path.
+    # QEMU child — may outlive vm.py.  Identified by the repo-specific
+    # disk path, which is always in the QEMU command line.
+    disk = str(REPO / ".vm" / "disk.qcow2")
+    subprocess.run(["pkill", "-f", f"qemu.*{disk}"], capture_output=True)
+    # Orphaned socket_vmnet_client wrappers (macOS) whose command line
+    # includes the subnet-specific socket path.
     subprocess.run(["pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}.*qemu"], capture_output=True)
-    # Kill mitmdump on the test port only (not a user's default-port proxy).
+    # mitmdump on the test port only (not a user's default-port proxy).
     subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"], capture_output=True)
-    # Kill any socket_vmnet daemon for the test subnet (runs as root).
+    # socket_vmnet daemon for the test subnet (runs as root).
     _sudo("pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}", capture_output=True)
     time.sleep(2)  # allow ports to be released
 
@@ -149,17 +152,17 @@ def running_vm():
 
     All tests in the module share a single VM instance.
     """
-    # The test suite never prompts for sudo.  On macOS, socket_vmnet and
-    # pf rules both need root, so we check for cached credentials up front.
+    # The test suite never prompts for sudo.  Networking and firewall
+    # rules both need root, so check for cached credentials up front.
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+        print(
+            "\n  sudo credentials not cached.  Run:\n\n"
+            "    sudo -v\n\n"
+            "  then re-run the test suite within the sudo timeout.\n",
+            file=sys.stderr, flush=True,
+        )
+        pytest.skip("sudo credentials not cached")
     if sys.platform == "darwin":
-        if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
-            print(
-                "\n  sudo credentials not cached.  Run:\n\n"
-                "    sudo -v\n\n"
-                "  then re-run the test suite within the sudo timeout.\n",
-                file=sys.stderr, flush=True,
-            )
-            pytest.skip("sudo credentials not cached")
         try:
             brew_prefix = Path(
                 subprocess.check_output(["brew", "--prefix"], text=True).strip()
@@ -238,7 +241,6 @@ def running_vm():
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
          "--subnet", TEST_SUBNET,
          "--proxy-port", str(TEST_PROXY_PORT),
-         "--no-firewall",
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
         stdout=console_f,
         stderr=console_f,
@@ -281,6 +283,12 @@ def running_vm():
     if vmnet_proc is not None:
         _sudo("kill", str(vmnet_proc.pid), capture_output=True)
         vmnet_proc.wait(timeout=5)
+    # On Linux, clean up TAP/bridge devices that may survive an orphaned
+    # QEMU kill (vm.py can't delete them while QEMU holds the TAP open).
+    if sys.platform == "linux":
+        for dev in ("vm-tap0", "vm-br0"):
+            if Path(f"/sys/class/net/{dev}").exists():
+                _sudo("ip", "link", "del", dev, capture_output=True)
     console_f.close()
 
 
@@ -379,25 +387,13 @@ def test_host_exposed_ports(running_vm):
     This protects the host machine: if other services (SSH, databases, etc.)
     were reachable, a compromised VM could pivot to attack them.
 
-    Requires host-side firewall rules (pf on macOS, iptables on Linux).
-    The test suite runs with --no-firewall, so this test loads and
-    unloads the rules itself.  sudo credentials are guaranteed cached
-    by the running_vm fixture.
+    The firewall rules are set up by vm.py start (via the backend's
+    setup_firewall method), so this test exercises the real production
+    rules — no manual rule loading needed.
 
     nmap is installed during provisioning via tests/nmap.yaml passed to
     vm.py start --extra-user-data, so no apt-get is needed here.
     """
-    # Load firewall rules for the duration of this test.
-    pf_anchor = "com.apple/agent-vm"
-    if sys.platform == "darwin":
-        pf_rules = (
-            f"pass in quick proto tcp from {TEST_SUBNET}.2 to {TEST_SUBNET}.1 port {TEST_PROXY_PORT}\n"
-            f"block in quick proto tcp from {TEST_SUBNET}.0/24 to {TEST_SUBNET}.1\n"
-        )
-        _sudo("pfctl", "-a", pf_anchor, "-f", "-",
-              input=pf_rules, text=True, check=True, capture_output=True)
-        _sudo("pfctl", "-E", capture_output=True)
-
     # Derive the host IP and proxy port from the VM's proxy env var.
     r = _vm_ssh("bash -lc 'echo $http_proxy'", timeout=10)
     proxy_url = r.stdout.strip()  # e.g. http://192.168.101.1:8090
@@ -453,10 +449,6 @@ def test_host_exposed_ports(running_vm):
                     open_ports.add(int(part.split("/")[0]))
 
     _progress(f"Open ports: {sorted(open_ports) if open_ports else 'none'}")
-
-    # Clean up firewall rules regardless of assertion outcome.
-    if sys.platform == "darwin":
-        _sudo("pfctl", "-a", pf_anchor, "-F", "all", capture_output=True)
 
     unexpected = open_ports - {proxy_port}
     assert not unexpected, (
