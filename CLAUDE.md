@@ -30,7 +30,7 @@ A sandboxed Debian VM on macOS with no direct internet access. All network traff
 
 **bindfs for UID mapping**: The 9p shared directory shows files owned by the host's macOS UID (e.g. 501) inside the guest, where the `vm` user is UID 1000. A systemd service mounts the raw 9p at `/mnt/9p`, then uses `bindfs` to create a UID-mapped view at `/home/vm/shared`. The service reads the actual UID/GID from the 9p mount at runtime with `stat`, so no build-time templating is needed.
 
-**SSH key, not password**: `vm.sh` generates a dedicated ed25519 keypair in `.vm/` on first run and injects the public key into cloud-init. Password auth is disabled. The key survives resets (only disk/seed/efi-vars are destroyed).
+**SSH key, not password**: `vm.py` generates a dedicated ed25519 keypair in `.vm/` on first run and injects the public key into cloud-init. Password auth is disabled. The key is ephemeral (nuked on reset along with the disk), which is fine — a new key and new seed.iso are generated together on the next start.
 
 ## cloud-init ordering pitfalls
 
@@ -47,22 +47,24 @@ A sandboxed Debian VM on macOS with no direct internet access. All network traff
 ```
 vm.py              Main entry point: start, ssh, reset subcommands (PEP 723 uv script)
 filter.py          mitmproxy allowlist addon — edit to control VM network access
-shared/            Shared with guest at ~/shared
+shared/            Shared with guest at ~/shared (only .gitkeep is tracked)
 cloud-init/
   user-data        Cloud-init config (proxy, CA cert, packages, systemd units)
   meta-data        Instance identity
   network-config   Static IP assignment (netplan v2 format)
-.vm/               Generated state (gitignore this)
-  base.qcow2       Downloaded Debian cloud image (kept across resets)
-  id_ed25519[.pub] SSH keypair (kept across resets)
-  disk.qcow2       CoW overlay disk (destroyed on reset)
-  seed.iso         Cloud-init seed ISO (destroyed on reset)
-  efi-vars.fd      UEFI variable store (destroyed on reset)
-  mitmdump.log     mitmproxy traffic log (appended each run)
+.images/           Persistent download cache (gitignored)
+  base.qcow2       Downloaded Debian cloud image (survives reset)
+.vm/               Ephemeral VM state (gitignored, nuked on reset)
+  id_ed25519[.pub] SSH keypair (regenerated after reset)
+  disk.qcow2       CoW overlay disk
+  seed.iso         Cloud-init seed ISO
+  efi-code.fd      Padded UEFI firmware (Linux only, derived from system package)
+  efi-vars.fd      UEFI variable store
+  mitmdump.log     mitmproxy traffic log
+  console.log      QEMU serial console output
 ```
 
-`vm.py start` handles the full startup sequence: it starts the socket_vmnet daemon
-(with a sudo prompt if the socket isn't already present), launches mitmdump in the
-background (logging to `.vm/mitmdump.log`), then boots QEMU in the foreground.
-On QEMU exit, mitmproxy is stopped. The vmnet daemon persists across runs (stopping
-it requires sudo).
+`vm.py start` handles the full startup sequence: it prints instructions to start
+socket_vmnet (macOS) if the socket isn't present, launches mitmdump in the background
+(logging to `.vm/mitmdump.log`), then boots QEMU in the foreground.
+On QEMU exit, mitmproxy is stopped. The vmnet daemon persists across runs.

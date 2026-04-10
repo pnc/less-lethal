@@ -15,14 +15,46 @@ import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
+from enum import Enum
 from pathlib import Path
 
 # --- Config defaults (overridable via CLI flags) ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROXY_PORT: int = 8090
-STATE_DIR: Path = SCRIPT_DIR / ".vm"
+STATE_DIR: Path = SCRIPT_DIR / ".vm"       # ephemeral state, nuked on reset
+IMAGES_DIR: Path = SCRIPT_DIR / ".images"  # persistent download cache (base image)
 SHARED_DIR: Path = SCRIPT_DIR / "shared"
 CLOUD_INIT_DIR: Path = SCRIPT_DIR / "cloud-init"
+
+
+# ---------------------------------------------------------------------------
+# Architecture enum
+# ---------------------------------------------------------------------------
+
+class Arch(Enum):
+    ARM64 = "arm64"
+    X86_64 = "x86_64"
+
+    @classmethod
+    def detect(cls) -> "Arch":
+        m = platform.machine()
+        if m in ("arm64", "aarch64"):
+            return cls.ARM64
+        if m in ("x86_64", "amd64"):
+            return cls.X86_64
+        sys.exit(f"Unsupported architecture: {m}")
+
+    @property
+    def qemu_bin(self) -> str:
+        return "qemu-system-aarch64" if self == Arch.ARM64 else "qemu-system-x86_64"
+
+    @property
+    def debian_image_url(self) -> str:
+        slug = "arm64" if self == Arch.ARM64 else "amd64"
+        return (
+            f"https://cloud.debian.org/images/cloud/trixie/daily/latest/"
+            f"debian-13-generic-{slug}-daily.qcow2"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +63,9 @@ CLOUD_INIT_DIR: Path = SCRIPT_DIR / "cloud-init"
 
 class Backend(ABC):
     """Abstracts platform-specific VM operations."""
+
+    def __init__(self, arch: Arch) -> None:
+        self.arch = arch
 
     # -- Network --
 
@@ -64,24 +99,21 @@ class Backend(ABC):
     # -- QEMU --
 
     @property
-    @abstractmethod
     def qemu_bin(self) -> str:
-        """QEMU binary name (e.g. qemu-system-aarch64)."""
+        return self.arch.qemu_bin
+
+    @property
+    def image_url(self) -> str:
+        return self.arch.debian_image_url
+
+    @property
+    def needs_efi(self) -> bool:
+        return self.arch == Arch.ARM64
 
     @property
     @abstractmethod
     def machine_args(self) -> list[str]:
         """QEMU -machine/-cpu args."""
-
-    @property
-    @abstractmethod
-    def image_url(self) -> str:
-        """URL of the Debian cloud image to download."""
-
-    @property
-    @abstractmethod
-    def needs_efi(self) -> bool:
-        """Whether UEFI firmware pflash drives are required."""
 
     @abstractmethod
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
@@ -102,9 +134,9 @@ class Backend(ABC):
 class DarwinBackend(Backend):
     """macOS backend: socket_vmnet for host-only networking, HVF acceleration."""
 
-    def __init__(self, brew: Path, arch: str) -> None:
+    def __init__(self, brew: Path, arch: Arch) -> None:
+        super().__init__(arch)
         self._brew = brew
-        self._arch = arch
 
     # -- Network --
 
@@ -160,24 +192,10 @@ class DarwinBackend(Backend):
     # -- QEMU --
 
     @property
-    def qemu_bin(self) -> str:
-        return "qemu-system-aarch64" if self._arch == "arm64" else "qemu-system-x86_64"
-
-    @property
     def machine_args(self) -> list[str]:
-        if self._arch == "arm64":
+        if self.arch == Arch.ARM64:
             return ["-machine", "virt,accel=hvf", "-cpu", "host"]
         return ["-machine", "q35,accel=hvf", "-cpu", "host"]
-
-    @property
-    def image_url(self) -> str:
-        if self._arch == "arm64":
-            return "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-arm64-daily.qcow2"
-        return "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.qcow2"
-
-    @property
-    def needs_efi(self) -> bool:
-        return self._arch == "arm64"
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
         # Homebrew ships properly-sized 64 MiB EDK2 images; use them directly.
@@ -208,16 +226,10 @@ class DarwinBackend(Backend):
 # ---------------------------------------------------------------------------
 
 class LinuxBackend(Backend):
-    """Linux backend: QEMU user networking, KVM (or TCG) acceleration.
+    """Linux backend: QEMU user networking, KVM (or TCG) acceleration."""
 
-    Note: QEMU user networking is not host-only isolated the way macOS
-    socket_vmnet is — the guest could bypass mitmproxy. The proxy still
-    intercepts all traffic configured to use it, but this is a known
-    limitation on Linux.
-    """
-
-    def __init__(self, arch: str) -> None:
-        self._arch = arch
+    def __init__(self, arch: Arch) -> None:
+        super().__init__(arch)
         self._accel = "kvm" if Path("/dev/kvm").exists() else "tcg"
 
     # -- Network --
@@ -254,26 +266,12 @@ ethernets:
     # -- QEMU --
 
     @property
-    def qemu_bin(self) -> str:
-        return "qemu-system-aarch64" if self._arch in ("arm64", "aarch64") else "qemu-system-x86_64"
-
-    @property
     def machine_args(self) -> list[str]:
-        if self._arch in ("arm64", "aarch64"):
+        if self.arch == Arch.ARM64:
             cpu = "host" if self._accel == "kvm" else "cortex-a57"
             return ["-machine", f"virt,accel={self._accel}", "-cpu", cpu]
         cpu = "host" if self._accel == "kvm" else "qemu64"
         return ["-machine", f"q35,accel={self._accel}", "-cpu", cpu]
-
-    @property
-    def image_url(self) -> str:
-        if self._arch in ("arm64", "aarch64"):
-            return "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-arm64-daily.qcow2"
-        return "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.qcow2"
-
-    @property
-    def needs_efi(self) -> bool:
-        return self._arch in ("arm64", "aarch64")
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
         # The Debian package ships a raw 3 MiB firmware blob; QEMU pflash
@@ -304,22 +302,14 @@ ethernets:
 # ---------------------------------------------------------------------------
 
 def make_backend() -> Backend:
-    os_name = sys.platform
-    arch = platform.machine()
+    arch = Arch.detect()
 
-    if os_name == "darwin":
-        if arch not in ("arm64", "x86_64"):
-            sys.exit(f"Unsupported macOS architecture: {arch}")
-        brew = _brew_prefix()
-        return DarwinBackend(brew=brew, arch=arch)
-
-    elif os_name == "linux":
-        if arch not in ("arm64", "aarch64", "x86_64"):
-            sys.exit(f"Unsupported Linux architecture: {arch}")
+    if sys.platform == "darwin":
+        return DarwinBackend(brew=_brew_prefix(), arch=arch)
+    elif sys.platform == "linux":
         return LinuxBackend(arch=arch)
-
     else:
-        sys.exit(f"Unsupported OS: {os_name}")
+        sys.exit(f"Unsupported OS: {sys.platform}")
 
 
 def _brew_prefix() -> Path:
@@ -341,7 +331,7 @@ def ensure_ssh_key() -> None:
 
 
 def ensure_base_image(backend: Backend) -> None:
-    base = STATE_DIR / "base.qcow2"
+    base = IMAGES_DIR / "base.qcow2"
     if not base.exists():
         print("Downloading Debian testing cloud image...")
         subprocess.run(["curl", "-L", "-o", str(base), backend.image_url], check=True)
@@ -351,9 +341,10 @@ def ensure_disk() -> None:
     disk = STATE_DIR / "disk.qcow2"
     if not disk.exists():
         print("Creating VM disk...")
+        base = IMAGES_DIR / "base.qcow2"
         subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", "-b", "base.qcow2", "-F", "qcow2", str(disk), "20G"],
-            check=True, cwd=STATE_DIR,
+            ["qemu-img", "create", "-f", "qcow2", "-b", str(base), "-F", "qcow2", str(disk), "20G"],
+            check=True,
         )
 
 
@@ -460,6 +451,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     backend = make_backend()
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
     backend.setup_network()
@@ -508,11 +500,9 @@ def cmd_ssh(args: argparse.Namespace) -> None:
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
-    for name in ("disk.qcow2", "seed.iso", "efi-vars.fd"):
-        f = STATE_DIR / name
-        if f.exists():
-            f.unlink()
-    print("VM state removed. Base image and SSH key kept.")
+    if STATE_DIR.exists():
+        shutil.rmtree(STATE_DIR)
+    print("VM state removed. Base image kept in .images/.")
 
 
 # ---------------------------------------------------------------------------
