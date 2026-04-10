@@ -138,7 +138,13 @@ ethernets:
 
     @abstractmethod
     def teardown_network(self) -> None:
-        """Clean up host-side networking (firewall rules, devices) after QEMU exits."""
+        """Clean up host-side networking (non-privileged) after QEMU exits."""
+
+    def setup_firewall(self) -> None:
+        """Load firewall rules restricting guest→host traffic. Requires sudo."""
+
+    def teardown_firewall(self) -> None:
+        """Remove firewall rules. Requires sudo."""
 
     @abstractmethod
     def launch_qemu(self, qemu_args: list[str]) -> subprocess.Popen:
@@ -209,14 +215,13 @@ class DarwinBackend(Backend):
                 f"      {socket_path}\n"
             )
 
-        # Host-side pf firewall: only the proxy port is reachable from the
-        # guest.  Rules are loaded into the com.apple/agent-vm anchor which
-        # is evaluated by macOS's default "anchor com.apple/*" rule — no
-        # modification of /etc/pf.conf is needed.
-        pf_rules = (
-            f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {self.proxy_port}\n"
-            f"block in quick proto tcp from {self._subnet}.0/24 to {self.host_ip}\n"
-        )
+    def setup_firewall(self) -> None:
+        """Load pf rules restricting guest→host traffic to the proxy port.
+
+        Rules go into the com.apple/agent-vm anchor which macOS's default
+        pf.conf evaluates via ``anchor "com.apple/*"``.  Requires sudo.
+        """
+        pf_rules = self.pf_rules()
         subprocess.run(
             ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-f", "-"],
             input=pf_rules, text=True, check=True, capture_output=True,
@@ -224,10 +229,20 @@ class DarwinBackend(Backend):
         # Enable pf (reference-counted; harmless if already enabled).
         subprocess.run(["sudo", "pfctl", "-E"], capture_output=True)
 
-    def teardown_network(self) -> None:
+    def teardown_firewall(self) -> None:
         subprocess.run(
             ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-F", "all"],
             capture_output=True,
+        )
+
+    def teardown_network(self) -> None:
+        pass
+
+    def pf_rules(self) -> str:
+        """Return the pf rule text for the current subnet/port."""
+        return (
+            f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {self.proxy_port}\n"
+            f"block in quick proto tcp from {self._subnet}.0/24 to {self.host_ip}\n"
         )
 
     def qemu_netdev_arg(self) -> str:
@@ -288,11 +303,10 @@ class LinuxBackend(Backend):
     # -- Network --
 
     def setup_network(self) -> None:
-        """Create bridge + TAP device and add host-side iptables rules.
+        """Create bridge + TAP device.
 
         All commands use sudo.  The bridge gives the guest a dedicated L2
-        segment and the iptables rules ensure only the proxy port is
-        reachable on the host — everything else is rejected.
+        segment.  Firewall rules are applied separately by setup_firewall().
         """
         br, tap = self._BRIDGE, self._TAP
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or "root"
@@ -309,7 +323,7 @@ class LinuxBackend(Backend):
             _sudo("ip", "link", "set", tap, "master", br)
             _sudo("ip", "link", "set", tap, "up")
 
-        # -- iptables: only proxy port reachable from bridge --
+    def setup_firewall(self) -> None:
         for rule in self._iptables_rules():
             # -C checks existence; add only if missing (idempotent).
             if subprocess.run(
@@ -318,11 +332,12 @@ class LinuxBackend(Backend):
             ).returncode != 0:
                 _sudo("iptables", "-A", *rule)
 
-    def teardown_network(self) -> None:
-        br, tap = self._BRIDGE, self._TAP
-
+    def teardown_firewall(self) -> None:
         for rule in self._iptables_rules():
             subprocess.run(["sudo", "iptables", "-D", *rule], capture_output=True)
+
+    def teardown_network(self) -> None:
+        br, tap = self._BRIDGE, self._TAP
 
         if Path(f"/sys/class/net/{tap}").exists():
             _sudo("ip", "link", "del", tap)
@@ -564,6 +579,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
     backend.setup_network()
+    if not args.no_firewall:
+        backend.setup_firewall()
     ensure_ssh_key()
     ensure_base_image(backend)
     ensure_disk()
@@ -589,6 +606,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     finally:
         mitm.terminate()
         mitm.wait()
+        if not args.no_firewall:
+            backend.teardown_firewall()
         backend.teardown_network()
 
     if qemu_rc != 0:
@@ -647,6 +666,11 @@ def main() -> None:
         "--proxy-port", default=PROXY_PORT, type=int, metavar="PORT",
         help=f"Port for the mitmproxy listener (default: {PROXY_PORT}). "
              "Change to run multiple VMs simultaneously on different subnets.",
+    )
+    start_p.add_argument(
+        "--no-firewall", action="store_true",
+        help="Skip host-side firewall setup (pf/iptables). "
+             "Useful when running from a test suite that should not prompt for sudo.",
     )
     sub.add_parser("reset", help="Destroy ephemeral VM state (keeps base image and SSH key)")
 

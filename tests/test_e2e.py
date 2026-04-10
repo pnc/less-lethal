@@ -218,6 +218,7 @@ def running_vm():
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
          "--subnet", TEST_SUBNET,
          "--proxy-port", str(TEST_PROXY_PORT),
+         "--no-firewall",
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
         stdout=console_f,
         stderr=console_f,
@@ -355,9 +356,37 @@ def test_host_exposed_ports(running_vm):
     This protects the host machine: if other services (SSH, databases, etc.)
     were reachable, a compromised VM could pivot to attack them.
 
+    Requires host-side firewall rules (pf on macOS, iptables on Linux).
+    Since the test suite runs with --no-firewall to avoid sudo prompts,
+    this test loads rules non-interactively and skips if sudo credentials
+    aren't cached.
+
     nmap is installed during provisioning via tests/nmap.yaml passed to
     vm.py start --extra-user-data, so no apt-get is needed here.
     """
+    # Load firewall rules non-interactively.  Skip if sudo isn't cached.
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+        print(
+            "\n  Skipping port isolation test — sudo credentials not cached.\n"
+            "  To include this test, run:\n\n"
+            "    sudo -v\n\n"
+            "  then re-run the test suite within the sudo timeout.\n",
+            file=sys.stderr, flush=True,
+        )
+        pytest.skip("sudo credentials not cached (needed for firewall rules)")
+
+    if sys.platform == "darwin":
+        pf_anchor = "com.apple/agent-vm"
+        pf_rules = (
+            f"pass in quick proto tcp from {TEST_SUBNET}.2 to {TEST_SUBNET}.1 port {TEST_PROXY_PORT}\n"
+            f"block in quick proto tcp from {TEST_SUBNET}.0/24 to {TEST_SUBNET}.1\n"
+        )
+        subprocess.run(
+            ["sudo", "-n", "pfctl", "-a", pf_anchor, "-f", "-"],
+            input=pf_rules, text=True, check=True, capture_output=True,
+        )
+        subprocess.run(["sudo", "-n", "pfctl", "-E"], capture_output=True)
+
     # Derive the host IP and proxy port from the VM's proxy env var.
     r = _vm_ssh("bash -lc 'echo $http_proxy'", timeout=10)
     proxy_url = r.stdout.strip()  # e.g. http://192.168.101.1:8090
@@ -413,6 +442,13 @@ def test_host_exposed_ports(running_vm):
                     open_ports.add(int(part.split("/")[0]))
 
     _progress(f"Open ports: {sorted(open_ports) if open_ports else 'none'}")
+
+    # Clean up firewall rules regardless of assertion outcome.
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["sudo", "-n", "pfctl", "-a", pf_anchor, "-F", "all"],
+            capture_output=True,
+        )
 
     unexpected = open_ports - {proxy_port}
     assert not unexpected, (
