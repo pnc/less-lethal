@@ -370,13 +370,23 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
                 content = content.replace("__HOST_IP__", backend.host_ip)
                 content = content.replace("__PROXY_PORT__", str(PROXY_PORT))
                 if src.name == "user-data" and extra_user_data is not None:
-                    # Merge base + extra via MIME multi-part so cloud-init
-                    # appends lists (packages, runcmd, etc.) from both files.
+                    # Merge base + extra via MIME multi-part.
+                    # merge_how tells cloud-init to append list keys (packages,
+                    # runcmd, etc.) rather than letting the second part replace
+                    # the first.  Without this, only the last part's packages
+                    # list is installed.
+                    merge_directive = (
+                        "merge_how:\n"
+                        " - name: list\n"
+                        "   settings: [append]\n"
+                        " - name: dict\n"
+                        "   settings: [no_replace, recurse_list]\n"
+                    )
+                    base = content.rstrip() + "\n" + merge_directive
+                    extra = extra_user_data.read_text().rstrip() + "\n" + merge_directive
                     msg = email.mime.multipart.MIMEMultipart("mixed")
-                    msg.attach(email.mime.text.MIMEText(content, "cloud-config", "utf-8"))
-                    msg.attach(email.mime.text.MIMEText(
-                        extra_user_data.read_text(), "cloud-config", "utf-8"
-                    ))
+                    msg.attach(email.mime.text.MIMEText(base, "cloud-config", "utf-8"))
+                    msg.attach(email.mime.text.MIMEText(extra, "cloud-config", "utf-8"))
                     content = msg.as_string()
                 (tmp_path / src.name).write_text(content)
 
