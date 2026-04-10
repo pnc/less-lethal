@@ -37,11 +37,9 @@ TRUSTED_DOMAINS: list[str] = [
     "pypi.org",
     r".*\.pypi\.org",
     "files.pythonhosted.org",
-    # Claude Code: API, web UI, platform, and binary downloads
-    "api.anthropic.com",
+    # Claude Code: web UI and platform
     "claude.ai",
     "platform.claude.com",
-    "storage.googleapis.com",
     # mitmproxy's magic domain that serves the CA cert
     "mitm.it",
 ]

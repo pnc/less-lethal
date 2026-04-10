@@ -151,9 +151,7 @@ write_files:
       Type=oneshot
       RemainAfterExit=yes
       ExecStart=/bin/sh -c '\
-        HOST_UID=$$(stat -c %%u /mnt/9p) && \
-        HOST_GID=$$(stat -c %%g /mnt/9p) && \
-        exec bindfs --map=$$HOST_UID/1000:@$$HOST_GID/@1000 /mnt/9p /home/vm/shared'
+        exec bindfs --force-user=vm --force-group=vm /mnt/9p /home/vm/shared'
       ExecStop=/bin/umount /home/vm/shared
       [Install]
       WantedBy=multi-user.target

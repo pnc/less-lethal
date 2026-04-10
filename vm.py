@@ -7,6 +7,7 @@
 """Agent VM — sandboxed Debian VM with mitmproxy traffic control."""
 
 import argparse
+import hashlib
 import os
 import platform
 import signal
@@ -301,7 +302,7 @@ class DarwinBackend(Backend):
         """Return the pf rule text for the current subnet/port."""
         return (
             f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {self.proxy_port}\n"
-            f"block in quick proto tcp from {self._subnet}.0/24 to {self.host_ip}\n"
+            f"block in quick from {self._subnet}.0/24 to any\n"
         )
 
     def qemu_netdev_arg(self) -> str:
@@ -522,8 +523,46 @@ def ensure_ssh_key() -> None:
 def ensure_base_image(backend: Backend) -> None:
     base = IMAGES_DIR / "base.qcow2"
     if not base.exists():
+        image_url = backend.image_url
+        image_filename = image_url.rsplit("/", 1)[1]
+        checksums_url = image_url.rsplit("/", 1)[0] + "/SHA512SUMS"
+
         print("Downloading Debian testing cloud image...")
-        subprocess.run(["curl", "-L", "-o", str(base), backend.image_url], check=True)
+        tmp_image = IMAGES_DIR / "base.qcow2.tmp"
+        subprocess.run(["curl", "-L", "-o", str(tmp_image), image_url], check=True)
+
+        print("Verifying image checksum...")
+        checksums_file = IMAGES_DIR / "SHA512SUMS"
+        subprocess.run(["curl", "-L", "-o", str(checksums_file), checksums_url], check=True)
+
+        expected_hash = None
+        for line in checksums_file.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].lstrip("*") == image_filename:
+                expected_hash = parts[0]
+                break
+
+        if expected_hash is None:
+            tmp_image.unlink(missing_ok=True)
+            sys.exit(f"Image filename {image_filename} not found in SHA512SUMS")
+
+        sha512 = hashlib.sha512()
+        with open(tmp_image, "rb") as f:
+            while chunk := f.read(1 << 20):
+                sha512.update(chunk)
+        actual_hash = sha512.hexdigest()
+
+        if actual_hash != expected_hash:
+            tmp_image.unlink(missing_ok=True)
+            sys.exit(
+                f"Image checksum mismatch!\n"
+                f"  Expected: {expected_hash}\n"
+                f"  Got:      {actual_hash}\n"
+                "The download may be corrupted or tampered with."
+            )
+
+        tmp_image.rename(base)
+        print("Image checksum verified.")
 
 
 def ensure_disk() -> None:
@@ -596,7 +635,7 @@ def build_qemu_args(backend: Backend, memory: str) -> list[str]:
         "-drive", f"file={seed},if=virtio,media=cdrom",
         "-device", "virtio-net-pci,netdev=net0",
         "-netdev", backend.qemu_netdev_arg(),
-        "-virtfs", f"local,path={SHARED_DIR},mount_tag=shared,security_model=none,id=shared",
+        "-virtfs", f"local,path={SHARED_DIR},mount_tag=shared,security_model=mapped-xattr,id=shared",
     ]
 
     if backend.needs_efi:
@@ -609,10 +648,10 @@ def build_qemu_args(backend: Backend, memory: str) -> list[str]:
     return args
 
 
-def start_mitmproxy(proxy_port: int = PROXY_PORT) -> subprocess.Popen:
+def start_mitmproxy(listen_host: str, proxy_port: int = PROXY_PORT) -> subprocess.Popen:
     """Start mitmdump in the background, logging to .vm/mitmdump.log."""
     log_path = STATE_DIR / "mitmdump.log"
-    cmd = ["mitmdump", "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
+    cmd = ["mitmdump", "--listen-host", listen_host, "-p", str(proxy_port)]
 
     # If this host itself uses an upstream proxy (e.g. we're inside a sandboxed
     # VM), forward mitmproxy's own outbound traffic through it.
@@ -721,7 +760,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     extra = Path(args.extra_user_data) if args.extra_user_data else None
     build_seed_iso(backend, extra_user_data=extra)
 
-    mitm = start_mitmproxy(proxy_port=backend.proxy_port)
+    mitm = start_mitmproxy(listen_host=backend.host_ip, proxy_port=backend.proxy_port)
 
     qemu_args = build_qemu_args(backend, memory=args.memory)
 
