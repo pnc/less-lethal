@@ -50,6 +50,92 @@ write_files:
       Options=trans=virtio,version=9p2000.L
       [Install]
       WantedBy=multi-user.target
+  # Staged to /opt/provision/ because write_files runs before /home/vm/ exists.
+  # runcmd copies them into place after user creation.
+  - path: /opt/provision/claude-settings.json
+    content: |
+      {
+        "model": "claude-opus-4-6",
+        "permissions": {
+          "defaultMode": "bypassPermissions"
+        }
+      }
+  - path: /opt/provision/CLAUDE.md
+    content: |
+      # Sandboxed VM — Network Proxy
+
+      This VM has no direct internet access.  All outbound HTTP/HTTPS
+      traffic is routed through a host-side mitmproxy that enforces an
+      allowlist.  Requests to endpoints not on the allowlist are blocked
+      before they leave the VM.
+
+      ## Why the proxy exists
+
+      An AI agent that simultaneously has (1) code execution,
+      (2) unrestricted internet access, and (3) autonomy is the
+      "lethal trifecta" — a combination where the agent can take
+      harmful, irreversible actions at scale with no human checkpoint.
+
+      This VM gives you (1) and (3) while constraining (2) to a narrow
+      set of pre-approved endpoints.  The human operator controls what
+      you can reach by editing the allowlist on the host machine.
+
+      ## Recognizing a proxy block: HTTP 418
+
+      When a request is blocked, you receive **HTTP 418** ("I'm a
+      Teapot").  This code is deliberately unusual so you can always
+      distinguish a proxy block from a real server error (like a
+      genuine 403 Forbidden).  If you see 418, the request never
+      reached the remote server — the proxy intercepted it.
+
+      **Do not retry blocked requests.  Do not try to circumvent the
+      proxy.  Do not try alternative endpoints for the same service.**
+
+      ## What to do when blocked
+
+      1. **Stop** what you are doing.
+      2. **Tell the user** what you were trying to do and which
+         endpoint you need.
+      3. **Suggest a rule** for the user to add to `allowlist.txt`
+         (on the host machine, in the repo root next to `filter.py`).
+
+      ### Rule format
+
+      Each line in `allowlist.txt` is:
+
+          METHOD https://hostname/path
+
+      Wildcards (`*`) are allowed only in the path, never in the
+      hostname.  One HTTP method per line.
+
+      ### Writing good rules
+
+      - **Be specific.**  Prefer exact paths over wildcards.
+        `POST https://api.example.com/v1/messages` is better than
+        `POST https://api.example.com/*`.
+      - **Justify wildcards.**  If you need a wildcard, explain which
+        path segments vary and why.  For example: "Download URLs
+        include a per-file ID, so an exact path isn't feasible —
+        `GET https://cdn.example.com/files/*`."
+      - **Scope to the API version.**  If the API uses `/v1/`, scope
+        the wildcard to that prefix, not `/*`.
+      - **Separate methods.**  GET and POST are different rules.
+
+      ### Example request to the user
+
+      > I need to call the Anthropic messages API.  The paths vary by
+      > resource (`/v1/messages`, `/v1/models`, etc.) but all share the
+      > stable `/v1/` prefix, so a prefix wildcard is appropriate:
+      >
+      >     POST https://api.anthropic.com/v1/*
+      >     GET  https://api.anthropic.com/v1/*
+
+      ## Trusted infrastructure (always allowed)
+
+      Package repos (debian.org, ubuntu.com, pypi.org) and the
+      mitmproxy CA endpoint (mitm.it) are trusted at the proxy level
+      and need no allowlist rules.
+
   - path: /etc/systemd/system/home-vm-shared.service
     content: |
       [Unit]
@@ -77,3 +163,10 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now mnt-9p.mount
   - systemctl enable --now home-vm-shared.service
+  # Install Claude Code settings and system-wide CLAUDE.md.
+  # These were staged to /opt/provision/ by write_files (which runs before
+  # user home dirs exist); runcmd runs after user creation so /home/vm/ is safe.
+  - mkdir -p /home/vm/.claude
+  - cp /opt/provision/claude-settings.json /home/vm/.claude/settings.json
+  - cp /opt/provision/CLAUDE.md /home/vm/CLAUDE.md
+  - chown -R vm:vm /home/vm/.claude /home/vm/CLAUDE.md
