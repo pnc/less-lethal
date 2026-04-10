@@ -8,4 +8,4 @@ dependencies = ["mitmproxy"]
 testpaths = ["tests"]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "pytest-sugar"]
