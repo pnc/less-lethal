@@ -6,7 +6,6 @@ QEMU runs via TCG (software emulation) when KVM is unavailable, which is slow;
 BOOT_TIMEOUT is set generously to accommodate that.
 """
 
-import signal
 import subprocess
 import sys
 import time
@@ -107,6 +106,24 @@ def running_vm():
     Module-scoped fixture: reset state, boot the VM, wait for SSH,
     then tear down (terminate vm.py and kill any stray QEMU) on exit.
     """
+    # On macOS, skip rather than hang if socket_vmnet isn't running.
+    if sys.platform == "darwin":
+        try:
+            brew_prefix = Path(
+                subprocess.check_output(["brew", "--prefix"], text=True).strip()
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pytest.skip("Homebrew not found — cannot locate socket_vmnet")
+        socket_path = brew_prefix / "var/run/socket_vmnet.host"
+        if not socket_path.is_socket():
+            pytest.skip(
+                "socket_vmnet not running — start it first with:\n"
+                f"  sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet "
+                "--vmnet-mode=host --vmnet-gateway=192.168.100.1 "
+                "--vmnet-dhcp-end=192.168.100.254 --vmnet-mask=255.255.255.0 "
+                f"{socket_path}"
+            )
+
     # Kill any stray processes from a previous run before touching port 8090
     _kill_all_vm_processes()
 
