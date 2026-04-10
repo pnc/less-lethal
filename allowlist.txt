@@ -5,14 +5,10 @@
 # Wildcards (*) are allowed in the path but NOT in the hostname.
 # Each line grants access to exactly one HTTP method + URL pattern.
 #
+# Be specific: scope rules to the API version or resource path,
+# not the entire domain.  Separate methods onto their own lines.
+#
 # Examples:
-#   GET  https://api.example.com/v1/*
-#   POST https://api.example.com/v1/messages
-
-GET   https://claude.ai/*
-POST  https://claude.ai/*
-GET   https://storage.googleapis.com/*
-GET   https://platform.claude.com/*
-POST  https://platform.claude.com/*
-GET   https://api.anthropic.com/*
-POST  https://api.anthropic.com/*
+#   GET  https://api.github.com/repos/myorg/myrepo/pulls
+#   POST https://api.github.com/repos/myorg/myrepo/issues
+#   GET  https://api.openweathermap.org/data/2.5/weather
