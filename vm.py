@@ -7,6 +7,8 @@
 """Agent VM — sandboxed Debian VM with mitmproxy traffic control."""
 
 import argparse
+import email.mime.multipart
+import email.mime.text
 import os
 import platform
 import shutil
@@ -348,7 +350,7 @@ def ensure_disk() -> None:
         )
 
 
-def build_seed_iso(backend: Backend) -> None:
+def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> None:
     seed = STATE_DIR / "seed.iso"
     if seed.exists():
         return
@@ -367,6 +369,15 @@ def build_seed_iso(backend: Backend) -> None:
                 content = content.replace("__SSH_PUB_KEY__", ssh_pub)
                 content = content.replace("__HOST_IP__", backend.host_ip)
                 content = content.replace("__PROXY_PORT__", str(PROXY_PORT))
+                if src.name == "user-data" and extra_user_data is not None:
+                    # Merge base + extra via MIME multi-part so cloud-init
+                    # appends lists (packages, runcmd, etc.) from both files.
+                    msg = email.mime.multipart.MIMEMultipart("mixed")
+                    msg.attach(email.mime.text.MIMEText(content, "cloud-config", "utf-8"))
+                    msg.attach(email.mime.text.MIMEText(
+                        extra_user_data.read_text(), "cloud-config", "utf-8"
+                    ))
+                    content = msg.as_string()
                 (tmp_path / src.name).write_text(content)
 
         if shutil.which("mkisofs"):
@@ -424,6 +435,12 @@ def start_mitmproxy() -> subprocess.Popen:
                 os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY"))
     if upstream:
         cmd += ["--mode", f"upstream:{upstream}"]
+        # If a caller has pre-placed the upstream proxy's CA cert here
+        # (e.g. the test suite when running inside a sandboxed VM),
+        # pass it to mitmdump so upstream TLS verification works.
+        outer_ca = STATE_DIR / "upstream-ca.pem"
+        if outer_ca.exists():
+            cmd += ["--set", f"ssl_verify_upstream_trusted_ca={outer_ca}"]
         print(f"  (forwarding upstream through {upstream})")
 
     filter_script = SCRIPT_DIR / "filter.py"
@@ -458,7 +475,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     ensure_ssh_key()
     ensure_base_image(backend)
     ensure_disk()
-    build_seed_iso(backend)
+    extra = Path(args.extra_user_data) if args.extra_user_data else None
+    build_seed_iso(backend, extra_user_data=extra)
 
     mitm = start_mitmproxy()
 
@@ -520,6 +538,11 @@ def main() -> None:
     start_p.add_argument(
         "--memory", default="2G", metavar="SIZE",
         help="RAM to give the VM, in QEMU notation (default: 2G)",
+    )
+    start_p.add_argument(
+        "--extra-user-data", metavar="FILE",
+        help="Extra cloud-init user-data file merged with the base config "
+             "(packages, runcmd, write_files, etc. are appended)",
     )
     sub.add_parser("reset", help="Destroy ephemeral VM state (keeps base image and SSH key)")
 

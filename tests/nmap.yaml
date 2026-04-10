@@ -1,0 +1,6 @@
+#cloud-config
+# Extra cloud-init config used only by the test suite.
+# Installs nmap during provisioning so test_host_exposed_ports can run
+# it without a separate apt-get install step.
+packages:
+  - nmap
