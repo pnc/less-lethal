@@ -70,6 +70,7 @@ write_files:
 packages:
   - curl
   - bindfs
+  - git
 
 runcmd:
   - mkdir -p /mnt/9p /home/vm/shared

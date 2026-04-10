@@ -22,6 +22,10 @@ ALLOWED: list[str] = [
     "pypi.org",
     r".*\.pypi\.org",
     "files.pythonhosted.org",
+    "claude.ai",
+    "storage.googleapis.com",
+    "platform.claude.com",
+    "api.anthropic.com",
     # mitmproxy's magic domain that serves the CA cert
     "mitm.it",
 ]
