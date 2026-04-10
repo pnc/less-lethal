@@ -1,0 +1,78 @@
+#cloud-config
+
+users:
+  - name: vm
+    lock_passwd: true
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - __SSH_PUB_KEY__
+
+ssh_pwauth: false
+
+# Fetch and trust the mitmproxy CA cert before apt runs.
+# bootcmd runs in the init stage (after networking, before packages).
+# mitm.it is a magic domain served by mitmproxy over plain HTTP.
+bootcmd:
+  - |
+    if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
+      http_proxy=http://192.168.100.1:8090 \
+        wget -qO /usr/local/share/ca-certificates/mitmproxy.crt http://mitm.it/cert/pem
+      update-ca-certificates
+    fi
+
+write_files:
+  - path: /etc/apt/apt.conf.d/90proxy
+    content: |
+      Acquire::http::Proxy "http://192.168.100.1:8090";
+      Acquire::https::Proxy "http://192.168.100.1:8090";
+  - path: /etc/profile.d/proxy.sh
+    content: |
+      export http_proxy=http://192.168.100.1:8090
+      export https_proxy=http://192.168.100.1:8090
+      export HTTP_PROXY=http://192.168.100.1:8090
+      export HTTPS_PROXY=http://192.168.100.1:8090
+      export no_proxy=localhost,127.0.0.1
+      export NO_PROXY=localhost,127.0.0.1
+      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mitmproxy.crt
+      export PATH="$HOME/.local/bin:$PATH"
+
+  - path: /etc/systemd/system/mnt-9p.mount
+    content: |
+      [Unit]
+      Description=9p shared directory (raw)
+      [Mount]
+      What=shared
+      Where=/mnt/9p
+      Type=9p
+      Options=trans=virtio,version=9p2000.L
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/home-vm-shared.service
+    content: |
+      [Unit]
+      Description=UID-mapped shared directory
+      After=mnt-9p.mount
+      Requires=mnt-9p.mount
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/sh -c '\
+        HOST_UID=$$(stat -c %%u /mnt/9p) && \
+        HOST_GID=$$(stat -c %%g /mnt/9p) && \
+        exec bindfs --map=$$HOST_UID/1000:@$$HOST_GID/@1000 /mnt/9p /home/vm/shared'
+      ExecStop=/bin/umount /home/vm/shared
+      [Install]
+      WantedBy=multi-user.target
+
+packages:
+  - curl
+  - bindfs
+
+runcmd:
+  - mkdir -p /mnt/9p /home/vm/shared
+  - systemctl daemon-reload
+  - systemctl enable --now mnt-9p.mount
+  - systemctl enable --now home-vm-shared.service
