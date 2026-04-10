@@ -4,24 +4,31 @@ A sandboxed Debian VM on macOS with no internet access. All traffic is forced th
 
 ## Usage
 
-Prerequisites: `brew install qemu socket_vmnet cdrtools`
+Prerequisites: `brew install qemu socket_vmnet cdrtools mitmproxy`
 
 ```bash
-# 1. Start the host-only network daemon (once, needs sudo)
-sudo ./start-vmnet.sh
+# Start everything: vmnet daemon (sudo prompt), mitmproxy, and QEMU
+./vm.py start
 
-# 2. Start mitmproxy on port 8090 (in another terminal)
-mitmproxy --listen-host 0.0.0.0 -p 8090
+# SSH in (from another terminal)
+./vm.py ssh
 
-# 3. Boot the VM (first run downloads the image and provisions)
-./vm.sh start
+# Run a command in the VM without an interactive shell
+./vm.py ssh -- ls /tmp
 
-# 4. SSH in
-./ssh.sh
-
-# 5. Destroy and recreate (keeps base image and SSH key)
-./vm.sh reset
-./vm.sh start
+# Destroy and recreate (keeps base image and SSH key)
+./vm.py reset
+./vm.py start
 ```
 
 Files in `shared/` on the host appear at `~/shared` inside the guest.
+
+## Traffic control
+
+Edit `filter.py` to control what the VM can reach. By default it blocks everything except common Debian/Python package repositories. The filter is a standard [mitmproxy addon](https://docs.mitmproxy.org/stable/addons-overview/) — mitmproxy reloads it on change.
+
+Proxy traffic is logged to `.vm/mitmdump.log`:
+
+```bash
+tail -f .vm/mitmdump.log
+```

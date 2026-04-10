@@ -1,0 +1,11 @@
+[project]
+name = "agent-vm"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["mitmproxy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+dev-dependencies = ["pytest"]

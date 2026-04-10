@@ -1,5 +1,15 @@
 # CLAUDE.md
 
+## Development workflow
+
+Always run the test suite before committing:
+
+```bash
+uv run pytest tests/test_e2e.py -v -s
+```
+
+The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl http://example.com` works through mitmproxy. Do not commit if this fails.
+
 ## What this project is
 
 A sandboxed Debian VM on macOS with no direct internet access. All network traffic is forced through a host-side mitmproxy instance, which intercepts TLS for full visibility. The VM is provisioned declaratively via cloud-init and launched with a single shell script.
@@ -35,9 +45,8 @@ A sandboxed Debian VM on macOS with no direct internet access. All network traff
 ## File layout
 
 ```
-vm.sh              Launch/reset the VM (unprivileged)
-start-vmnet.sh     Start the vmnet daemon (sudo, auditable)
-ssh.sh             SSH into the VM
+vm.py              Main entry point: start, ssh, reset subcommands (PEP 723 uv script)
+filter.py          mitmproxy allowlist addon — edit to control VM network access
 shared/            Shared with guest at ~/shared
 cloud-init/
   user-data        Cloud-init config (proxy, CA cert, packages, systemd units)
@@ -47,6 +56,13 @@ cloud-init/
   base.qcow2       Downloaded Debian cloud image (kept across resets)
   id_ed25519[.pub] SSH keypair (kept across resets)
   disk.qcow2       CoW overlay disk (destroyed on reset)
-  seed.iso          Cloud-init seed ISO (destroyed on reset)
+  seed.iso         Cloud-init seed ISO (destroyed on reset)
   efi-vars.fd      UEFI variable store (destroyed on reset)
+  mitmdump.log     mitmproxy traffic log (appended each run)
 ```
+
+`vm.py start` handles the full startup sequence: it starts the socket_vmnet daemon
+(with a sudo prompt if the socket isn't already present), launches mitmdump in the
+background (logging to `.vm/mitmdump.log`), then boots QEMU in the foreground.
+On QEMU exit, mitmproxy is stopped. The vmnet daemon persists across runs (stopping
+it requires sudo).

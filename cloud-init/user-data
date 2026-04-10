@@ -16,7 +16,7 @@ ssh_pwauth: false
 bootcmd:
   - |
     if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
-      http_proxy=http://192.168.100.1:8090 \
+      http_proxy=http://__HOST_IP__:__PROXY_PORT__ \
         wget -qO /usr/local/share/ca-certificates/mitmproxy.crt http://mitm.it/cert/pem
       update-ca-certificates
     fi
@@ -24,16 +24,16 @@ bootcmd:
 write_files:
   - path: /etc/apt/apt.conf.d/90proxy
     content: |
-      Acquire::http::Proxy "http://192.168.100.1:8090";
-      Acquire::https::Proxy "http://192.168.100.1:8090";
+      Acquire::http::Proxy "http://__HOST_IP__:__PROXY_PORT__";
+      Acquire::https::Proxy "http://__HOST_IP__:__PROXY_PORT__";
   - path: /etc/profile.d/proxy.sh
     content: |
-      export http_proxy=http://192.168.100.1:8090
-      export https_proxy=http://192.168.100.1:8090
-      export HTTP_PROXY=http://192.168.100.1:8090
-      export HTTPS_PROXY=http://192.168.100.1:8090
-      export no_proxy=localhost,127.0.0.1
-      export NO_PROXY=localhost,127.0.0.1
+      export http_proxy=http://__HOST_IP__:__PROXY_PORT__
+      export https_proxy=http://__HOST_IP__:__PROXY_PORT__
+      export HTTP_PROXY=http://__HOST_IP__:__PROXY_PORT__
+      export HTTPS_PROXY=http://__HOST_IP__:__PROXY_PORT__
+      export no_proxy=localhost,127.0.0.1,__HOST_IP__
+      export NO_PROXY=localhost,127.0.0.1,__HOST_IP__
       export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
       export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mitmproxy.crt
