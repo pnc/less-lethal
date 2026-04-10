@@ -70,7 +70,9 @@ cloud-init/
   console.log      QEMU serial console output
 ```
 
-`vm.py start` handles the full startup sequence: it prints instructions to start
-socket_vmnet (macOS) if the socket isn't present, launches mitmdump in the background
-(logging to `.vm/mitmdump.log`), then boots QEMU in the foreground.
-On QEMU exit, mitmproxy is stopped. The vmnet daemon persists across runs.
+`vm.py start` handles the full startup sequence: it auto-launches socket_vmnet
+(macOS) if the socket isn't present, starts mitmdump in the background (logging
+to `.vm/mitmdump.log`), boots QEMU, waits for SSH, then drops you into an SSH
+session. On session exit, all processes (QEMU, mitmproxy, socket_vmnet) are
+stopped. When stdout is not a TTY (e.g. test suite), QEMU runs in the
+foreground with the serial console on stdout instead.

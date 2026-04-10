@@ -14,15 +14,17 @@ This VM provides (1) and (2) but constrains (3): all traffic passes through a hu
 
 ## Quick start
 
-**macOS prerequisites:** `brew install qemu socket_vmnet cdrtools mitmproxy`
+**macOS prerequisites:** `brew install qemu socket_vmnet mitmproxy`
 
 **Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage iptables` (or x86 equivalents). Requires sudo for TAP/bridge setup.
 
 ```bash
-./vm.py start          # start mitmproxy + QEMU
-./vm.py ssh            # SSH in (from another terminal)
+./vm.py start          # start everything + drop into SSH session
+./vm.py ssh            # open another SSH session (from a second terminal)
 ./vm.py reset          # destroy ephemeral state, keep base image
 ```
+
+`vm.py start` launches socket\_vmnet (macOS), mitmproxy, and QEMU, waits for the VM to boot, then drops you into an SSH session. Exiting the session stops everything. Serial console output is logged to `.vm/console.log`.
 
 Files in `shared/` on the host appear at `~/shared` inside the guest.
 

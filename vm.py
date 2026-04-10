@@ -7,8 +7,6 @@
 """Agent VM — sandboxed Debian VM with mitmproxy traffic control."""
 
 import argparse
-import email.mime.multipart
-import email.mime.text
 import os
 import platform
 import signal
@@ -159,42 +157,30 @@ ethernets:
 class DarwinBackend(Backend):
     """macOS backend: socket_vmnet for host-only networking, HVF acceleration."""
 
+    # Anchor namespace: macOS's default /etc/pf.conf evaluates
+    # `anchor "com.apple/*"`, so sub-anchors in this namespace are
+    # automatically active without modifying any system files.
+    # Alternatives considered:
+    #   - Custom anchor in /etc/pf.conf: invasive, reset by macOS updates,
+    #     silent security regression if the line is lost.
+    #   - pfctl -f with standalone file: replaces ALL pf rules, dangerous.
+    #   - LaunchDaemon for custom anchor: over-engineered for a dev tool.
+    # The com.apple/* pattern has been stable since macOS 10.10 and is used
+    # by Apple's own services.  If Apple removes it, the firewall fails
+    # open — the nmap test in test_e2e.py will catch this.
     _PF_ANCHOR = "com.apple/agent-vm"
 
     def __init__(self, brew: Path, arch: Arch, subnet: str, proxy_port: int = PROXY_PORT) -> None:
         super().__init__(arch, subnet, proxy_port)
         self._brew = brew
+        self._vmnet_proc: subprocess.Popen | None = None
 
     # -- Network --
 
     def setup_network(self) -> None:
         socket_path = self._socket_path
         if not socket_path.is_socket():
-            socket_vmnet = self._brew / "opt/socket_vmnet/bin/socket_vmnet"
-            if not socket_vmnet.exists():
-                sys.exit("socket_vmnet not found. Install via: brew install socket_vmnet")
-
-            socket_dir = socket_path.parent
-            sys.exit(
-                f"socket_vmnet is not running (socket not found at {socket_path}).\n"
-                "\n"
-                "Start it in a separate terminal before running vm.py:\n"
-                "\n"
-                f"  sudo mkdir -p {socket_dir}\n"
-                f"  sudo chown $USER {socket_dir}\n"
-                f"  sudo chmod 700 {socket_dir}\n"
-                f"  sudo {socket_vmnet} \\\n"
-                f"      --vmnet-mode=host \\\n"
-                f"      --vmnet-gateway={self.host_ip} \\\n"
-                f"      --vmnet-dhcp-end={self._subnet}.254 \\\n"
-                f"      --vmnet-mask=255.255.255.0 \\\n"
-                f"      {socket_path}\n"
-                "\n"
-                "Verify the socket exists before continuing:\n"
-                f"  ls -la {socket_path}\n"
-                "\n"
-                "socket_vmnet is open source: https://github.com/lima-vm/socket_vmnet"
-            )
+            self._start_socket_vmnet()
 
         # Verify the expected gateway IP is assigned to a local interface.
         # socket_vmnet assigns --vmnet-gateway to a bridge interface; if the
@@ -213,8 +199,60 @@ class DarwinBackend(Backend):
                 f"      --vmnet-gateway={self.host_ip} \\\n"
                 f"      --vmnet-dhcp-end={self._subnet}.254 \\\n"
                 f"      --vmnet-mask=255.255.255.0 \\\n"
-                f"      {socket_path}\n"
+                f"      {self._socket_path}\n"
             )
+
+    def _start_socket_vmnet(self) -> None:
+        """Launch socket_vmnet via sudo.
+
+        Prints a justification explaining what needs root and why before
+        the sudo prompt appears.  Polls for the socket to appear.
+        """
+        socket_vmnet = self._brew / "opt/socket_vmnet/bin/socket_vmnet"
+        if not socket_vmnet.exists():
+            sys.exit("socket_vmnet not found. Install via: brew install socket_vmnet")
+
+        socket_path = self._socket_path
+        socket_dir = socket_path.parent
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "root"
+
+        print(
+            "socket_vmnet needs to run as root because macOS's vmnet framework\n"
+            "requires a privileged entitlement.  The following will run with sudo:\n"
+            "\n"
+            f"  1. Create socket directory:  mkdir -p {socket_dir}\n"
+            f"  2. Set ownership:            chown {user} {socket_dir}\n"
+            f"  3. Start vmnet daemon:       {socket_vmnet.name} --vmnet-mode=host ...\n"
+            "\n"
+            "The daemon will be stopped automatically when vm.py exits.\n"
+        )
+
+        _sudo("mkdir", "-p", str(socket_dir))
+        _sudo("chown", user, str(socket_dir))
+        _sudo("chmod", "700", str(socket_dir))
+
+        self._vmnet_proc = subprocess.Popen([
+            "sudo", str(socket_vmnet),
+            "--vmnet-mode=host",
+            f"--vmnet-gateway={self.host_ip}",
+            f"--vmnet-dhcp-end={self._subnet}.254",
+            "--vmnet-mask=255.255.255.0",
+            str(socket_path),
+        ])
+
+        # Wait for the socket to appear.
+        for _ in range(30):
+            if socket_path.is_socket():
+                break
+            if self._vmnet_proc.poll() is not None:
+                sys.exit(
+                    f"socket_vmnet exited immediately (rc={self._vmnet_proc.returncode}). "
+                    "Is another instance already running for this subnet?"
+                )
+            time.sleep(0.5)
+        else:
+            self._vmnet_proc.terminate()
+            sys.exit("socket_vmnet did not create socket within 15s")
 
     def setup_firewall(self) -> None:
         """Load pf rules restricting guest→host traffic to the proxy port.
@@ -230,6 +268,19 @@ class DarwinBackend(Backend):
         # Enable pf (reference-counted; harmless if already enabled).
         subprocess.run(["sudo", "pfctl", "-E"], capture_output=True)
 
+        # Verify the anchor is active (catches the case where macOS
+        # stopped evaluating com.apple/* anchors in a future release).
+        result = subprocess.run(
+            ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-sr"],
+            capture_output=True, text=True,
+        )
+        if "block" not in result.stdout:
+            print(
+                "WARNING: pf anchor rules may not be active. "
+                "Host ports may be accessible from the VM.",
+                file=sys.stderr,
+            )
+
     def teardown_firewall(self) -> None:
         subprocess.run(
             ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-F", "all"],
@@ -237,7 +288,14 @@ class DarwinBackend(Backend):
         )
 
     def teardown_network(self) -> None:
-        pass
+        if self._vmnet_proc is not None:
+            # socket_vmnet runs as root; terminate via sudo kill.
+            subprocess.run(
+                ["sudo", "kill", str(self._vmnet_proc.pid)],
+                capture_output=True,
+            )
+            self._vmnet_proc.wait(timeout=5)
+            self._vmnet_proc = None
 
     def pf_rules(self) -> str:
         """Return the pf rule text for the current subnet/port."""
@@ -258,19 +316,11 @@ class DarwinBackend(Backend):
         return ["-machine", "q35,accel=hvf", "-cpu", "host"]
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
-        # Homebrew ships properly-sized 64 MiB EDK2 images; use them directly.
-        efi_code = self._brew / "share/qemu/edk2-aarch64-code.fd"
-        if not efi_code.exists():
-            sys.exit(f"UEFI firmware not found at {efi_code}\nInstall: brew install qemu")
-
-        efi_vars = state_dir / "efi-vars.fd"
-        if not efi_vars.exists():
-            template = self._brew / "share/qemu/edk2-arm-vars.fd"
-            if template.exists():
-                shutil.copy(template, efi_vars)
-            else:
-                efi_vars.write_bytes(b"\x00" * (64 * 1024 * 1024))
-        return efi_code, efi_vars
+        code_src = self._brew / "share/qemu/edk2-aarch64-code.fd"
+        if not code_src.exists():
+            sys.exit(f"UEFI firmware not found at {code_src}\nInstall: brew install qemu")
+        vars_src = self._brew / "share/qemu/edk2-arm-vars.fd"
+        return _prepare_efi(state_dir, code_src, vars_src)
 
     def launch_qemu(self, qemu_args: list[str]) -> subprocess.Popen:
         client = self._brew / "opt/socket_vmnet/bin/socket_vmnet_client"
@@ -369,24 +419,10 @@ class LinuxBackend(Backend):
         return ["-machine", f"q35,accel={self._accel}", "-cpu", cpu]
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
-        # The Debian package ships a raw 3 MiB firmware blob; QEMU pflash
-        # requires exactly 64 MiB.  We pad it once into state_dir.
-        src = Path("/usr/share/qemu-efi-aarch64/QEMU_EFI.fd")
-        if not src.exists():
+        code_src = Path("/usr/share/qemu-efi-aarch64/QEMU_EFI.fd")
+        if not code_src.exists():
             sys.exit("UEFI firmware not found. Install: apt install qemu-efi-aarch64")
-
-        flash_size = 64 * 1024 * 1024
-
-        efi_code = state_dir / "efi-code.fd"
-        if not efi_code.exists():
-            fw = src.read_bytes()
-            efi_code.write_bytes(fw + b"\x00" * (flash_size - len(fw)))
-
-        efi_vars = state_dir / "efi-vars.fd"
-        if not efi_vars.exists():
-            efi_vars.write_bytes(b"\x00" * flash_size)
-
-        return efi_code, efi_vars
+        return _prepare_efi(state_dir, code_src, vars_src=None)
 
     def launch_qemu(self, qemu_args: list[str]) -> subprocess.Popen:
         return subprocess.Popen([self.qemu_bin, *qemu_args])
@@ -420,6 +456,59 @@ def _brew_prefix() -> Path:
 # ---------------------------------------------------------------------------
 # Platform-independent helpers
 # ---------------------------------------------------------------------------
+
+def _indent(text: str, n: int) -> str:
+    """Indent every line of *text* by *n* spaces."""
+    prefix = " " * n
+    return "".join(prefix + line + "\n" for line in text.splitlines()) + "\n"
+
+
+def _build_iso(source_dir: str, output: Path) -> None:
+    """Build a cloud-init seed ISO from *source_dir*."""
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["hdiutil", "makehybrid", "-iso", "-joliet",
+             "-default-volume-name", "cidata", "-o", str(output), source_dir],
+            check=True,
+        )
+        # hdiutil appends .cdr to the output path; rename it.
+        cdr = Path(str(output) + ".cdr")
+        if cdr.exists():
+            cdr.rename(output)
+    else:
+        tool = "mkisofs" if shutil.which("mkisofs") else "xorriso"
+        cmd = [tool] if tool == "mkisofs" else [tool, "-as", "mkisofs"]
+        subprocess.run(
+            [*cmd, "-output", str(output), "-volid", "cidata",
+             "-joliet", "-rock", source_dir],
+            check=True, capture_output=True,
+        )
+
+
+def _prepare_efi(state_dir: Path, code_src: Path, vars_src: Path | None) -> tuple[Path, Path]:
+    """Prepare 64 MiB pflash images for QEMU EFI boot.
+
+    Copies *code_src* into state_dir (padding to 64 MiB if smaller).
+    Copies *vars_src* if provided, otherwise creates a zero-filled file.
+    """
+    flash_size = 64 * 1024 * 1024
+
+    efi_code = state_dir / "efi-code.fd"
+    if not efi_code.exists():
+        fw = code_src.read_bytes()
+        if len(fw) < flash_size:
+            fw += b"\x00" * (flash_size - len(fw))
+        efi_code.write_bytes(fw)
+
+    efi_vars = state_dir / "efi-vars.fd"
+    if not efi_vars.exists():
+        if vars_src and vars_src.exists():
+            shutil.copy(vars_src, efi_vars)
+        else:
+            efi_vars.write_bytes(b"\x00" * flash_size)
+
+    return efi_code, efi_vars
+
 
 def ensure_ssh_key() -> None:
     key = STATE_DIR / "id_ed25519"
@@ -468,7 +557,7 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
                 content = content.replace("__HOST_IP__", backend.host_ip)
                 content = content.replace("__PROXY_PORT__", str(backend.proxy_port))
                 if src.name == "user-data" and extra_user_data is not None:
-                    # Merge base + extra via MIME multi-part.
+                    # Merge base + extra via cloud-init's cloud-config-archive.
                     # merge_how tells cloud-init to append list keys (packages,
                     # runcmd, etc.) rather than letting the second part replace
                     # the first.  Without this, only the last part's packages
@@ -480,32 +569,20 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
                         " - name: dict\n"
                         "   settings: [no_replace, recurse_list]\n"
                     )
-                    base = content.rstrip() + "\n" + merge_directive
-                    extra = extra_user_data.read_text().rstrip() + "\n" + merge_directive
-                    msg = email.mime.multipart.MIMEMultipart("mixed")
-                    msg.attach(email.mime.text.MIMEText(base, "cloud-config", "utf-8"))
-                    msg.attach(email.mime.text.MIMEText(extra, "cloud-config", "utf-8"))
-                    content = msg.as_string()
+                    base_part = content.rstrip() + "\n" + merge_directive
+                    extra_part = extra_user_data.read_text().rstrip() + "\n" + merge_directive
+                    content = (
+                        "#cloud-config-archive\n"
+                        "- type: \"text/cloud-config\"\n"
+                        "  content: |\n"
+                        + _indent(base_part, 4)
+                        + "- type: \"text/cloud-config\"\n"
+                        "  content: |\n"
+                        + _indent(extra_part, 4)
+                    )
                 (tmp_path / src.name).write_text(content)
 
-        if shutil.which("mkisofs"):
-            subprocess.run(
-                ["mkisofs", "-output", str(seed), "-volid", "cidata", "-joliet", "-rock", tmp],
-                check=True, capture_output=True,
-            )
-        elif shutil.which("xorriso"):
-            subprocess.run(
-                ["xorriso", "-as", "mkisofs", "-output", str(seed), "-volid", "cidata", "-joliet", "-rock", tmp],
-                check=True, capture_output=True,
-            )
-        else:
-            subprocess.run(
-                ["hdiutil", "makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", str(seed), tmp],
-                check=True,
-            )
-            cdr = Path(str(seed) + ".cdr")
-            if cdr.exists():
-                cdr.rename(seed)
+        _build_iso(tmp, seed)
 
 
 def build_qemu_args(backend: Backend, memory: str) -> list[str]:
@@ -568,12 +645,68 @@ def start_mitmproxy(proxy_port: int = PROXY_PORT) -> subprocess.Popen:
     return proc
 
 
+def _ssh_args(backend: Backend) -> list[str]:
+    """Return the SSH command-line arguments for connecting to the VM."""
+    return [
+        "ssh",
+        "-i", str(STATE_DIR / "id_ed25519"),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-p", str(backend.ssh_port),
+        "-q",
+        f"vm@{backend.ssh_host}",
+    ]
+
+
+def _wait_for_ssh(backend: Backend, qemu_proc: subprocess.Popen,
+                  timeout: int = 300) -> None:
+    """Poll SSH until the VM accepts connections, or exit on timeout/crash."""
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        if qemu_proc.poll() is not None:
+            # Dump console log tail to help debug.
+            console = STATE_DIR / "console.log"
+            if console.exists():
+                tail = console.read_text(errors="replace")[-2048:]
+                print(f"\n--- last console output ---\n{tail}", file=sys.stderr)
+            sys.exit(
+                f"QEMU exited prematurely (rc={qemu_proc.returncode}). "
+                "Check .vm/console.log for details."
+            )
+        attempt += 1
+        remaining = int(deadline - time.monotonic())
+        print(f"\r  Waiting for SSH... attempt {attempt} ({remaining}s remaining)  ",
+              end="", flush=True)
+        try:
+            r = subprocess.run(
+                [*_ssh_args(backend), "-o", "ConnectTimeout=5", "true"],
+                capture_output=True, timeout=10,
+            )
+            if r.returncode == 0:
+                print(f"\r  SSH ready after {attempt} attempt(s).{'':30}")
+                return
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(10)
+
+    console = STATE_DIR / "console.log"
+    if console.exists():
+        tail = console.read_text(errors="replace")[-2048:]
+        print(f"\n--- last console output ---\n{tail}", file=sys.stderr)
+    sys.exit(
+        f"VM did not become SSH-accessible within {timeout}s. "
+        "Check .vm/console.log for boot output."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
 def cmd_start(args: argparse.Namespace) -> None:
     backend = make_backend(subnet=args.subnet, proxy_port=args.proxy_port)
+    interactive = sys.stdout.isatty()
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -590,56 +723,76 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     mitm = start_mitmproxy(proxy_port=backend.proxy_port)
 
-    print(f"\nStarting VM...")
-    print(f"  SSH:      ./vm.py ssh")
-    print(f"  Proxy:    http://{backend.host_ip}:{backend.proxy_port} (from guest)")
-    print(f"  Logs:     tail -f .vm/mitmdump.log")
-    print(f"  Quit:     Ctrl-A X")
-    print()
+    qemu_args = build_qemu_args(backend, memory=args.memory)
 
-    qemu_proc = backend.launch_qemu(build_qemu_args(backend, memory=args.memory))
+    if interactive:
+        # Background QEMU with serial output to file, then drop into SSH.
+        console_log = STATE_DIR / "console.log"
+        qemu_args = [a for a in qemu_args if a != "-nographic"]
+        qemu_args += ["-serial", f"file:{console_log}", "-monitor", "none", "-display", "none"]
 
-    # Propagate SIGTERM to QEMU so that killing vm.py (e.g. from a test
-    # fixture) also stops the QEMU child and releases the TAP device.
-    # Just terminate QEMU and let .wait() return naturally — no sys.exit()
-    # which would raise SystemExit inside the signal handler context.
-    signal.signal(signal.SIGTERM, lambda *_: qemu_proc.terminate())
+        print(f"\nStarting VM (console: .vm/console.log)...")
+        print(f"  Proxy:    http://{backend.host_ip}:{backend.proxy_port} (from guest)")
+        print(f"  Logs:     tail -f .vm/mitmdump.log")
+        print()
 
-    try:
-        qemu_rc = qemu_proc.wait()
-    except KeyboardInterrupt:
-        qemu_proc.terminate()
-        qemu_proc.wait()
-        qemu_rc = 0  # clean user exit
-    finally:
-        mitm.terminate()
-        mitm.wait()
-        if not args.no_firewall:
-            backend.teardown_firewall()
-        backend.teardown_network()
+        qemu_proc = backend.launch_qemu(qemu_args)
+        signal.signal(signal.SIGTERM, lambda *_: qemu_proc.terminate())
 
-    if qemu_rc != 0:
-        sys.exit(f"QEMU exited with code {qemu_rc}")
+        try:
+            _wait_for_ssh(backend, qemu_proc)
+            print(f"  Log out of the SSH session to stop the VM.\n")
+            subprocess.run([*_ssh_args(backend)])
+        except KeyboardInterrupt:
+            pass
+        finally:
+            qemu_proc.terminate()
+            qemu_proc.wait()
+            mitm.terminate()
+            mitm.wait()
+            if not args.no_firewall:
+                backend.teardown_firewall()
+            backend.teardown_network()
+    else:
+        # Non-interactive: foreground QEMU with serial console on stdout.
+        # Used by the test suite (stdout redirected to a file).
+        print(f"\nStarting VM...")
+        print(f"  SSH:      ./vm.py ssh")
+        print(f"  Proxy:    http://{backend.host_ip}:{backend.proxy_port} (from guest)")
+        print(f"  Logs:     tail -f .vm/mitmdump.log")
+        print(f"  Quit:     Ctrl-A X")
+        print()
+
+        qemu_proc = backend.launch_qemu(qemu_args)
+        signal.signal(signal.SIGTERM, lambda *_: qemu_proc.terminate())
+
+        try:
+            qemu_rc = qemu_proc.wait()
+        except KeyboardInterrupt:
+            qemu_proc.terminate()
+            qemu_proc.wait()
+            qemu_rc = 0  # clean user exit
+        finally:
+            mitm.terminate()
+            mitm.wait()
+            if not args.no_firewall:
+                backend.teardown_firewall()
+            backend.teardown_network()
+
+        if qemu_rc != 0:
+            sys.exit(f"QEMU exited with code {qemu_rc}")
 
 
 def cmd_ssh(args: argparse.Namespace) -> None:
     backend = make_backend(subnet=args.subnet)
-    key = STATE_DIR / "id_ed25519"
-    os.execvp("ssh", [
-        "ssh",
-        "-i", str(key),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-p", str(backend.ssh_port),
-        "-q",
-        f"vm@{backend.ssh_host}",
-        *args.cmd,
-    ])
+    os.execvp("ssh", [*_ssh_args(backend), *args.cmd])
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
     if STATE_DIR.exists():
-        shutil.rmtree(STATE_DIR)
+        # ignore_errors handles FUSE hidden files (.fuse_hidden*) on 9p
+        # shared mounts that can't be removed while the host holds them open.
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
     print("VM state removed. Base image kept in .images/.")
 
 
