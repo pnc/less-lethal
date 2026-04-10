@@ -30,10 +30,24 @@ CURL_TIMEOUT = 60    # seconds for the curl command itself
 # inside a VM that is itself on the 192.168.100.0/24 subnet.
 TEST_SUBNET = "192.168.101"
 
+# Module-level start time, set once the VM starts booting.
+_t0: float = 0.0
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _elapsed() -> str:
+    """Return a '[MM:SS]' tag relative to VM boot start."""
+    s = int(time.monotonic() - _t0)
+    return f"[{s // 60:02d}:{s % 60:02d}]"
+
+
+def _progress(msg: str) -> None:
+    """Print a timestamped progress line to stderr."""
+    print(f"  {_elapsed()} {msg}", file=sys.stderr, flush=True)
+
 
 def _vm(*args: str, **kwargs) -> subprocess.CompletedProcess:
     """Run a vm.py subcommand and return the CompletedProcess."""
@@ -86,11 +100,11 @@ def _wait_for_ssh(vm_proc: subprocess.Popen, timeout: int) -> None:
 
         attempt += 1
         remaining = int(deadline - time.monotonic())
-        print(f"  SSH probe #{attempt} ({remaining}s remaining)…", file=sys.stderr)
+        _progress(f"SSH probe #{attempt} ({remaining}s remaining)…")
         try:
             r = _vm_ssh("true", timeout=10)
             if r.returncode == 0:
-                print(f"  SSH ready after {attempt} probe(s).", file=sys.stderr)
+                _progress(f"SSH ready after {attempt} probe(s)")
                 return
         except subprocess.TimeoutExpired:
             pass  # SSH not up yet; keep waiting
@@ -163,6 +177,10 @@ def running_vm():
     CONSOLE_LOG.parent.mkdir(parents=True, exist_ok=True)
     console_f = CONSOLE_LOG.open("w")
 
+    global _t0
+    _t0 = time.monotonic()
+    _progress("Launching VM (mitmproxy + QEMU)…")
+
     # vm.py start runs mitmproxy in the background and QEMU in the foreground.
     # Both inherit our file handles, so their output lands in console.log.
     vm_proc = subprocess.Popen(
@@ -210,13 +228,24 @@ def test_cloud_init_success(running_vm):
     package installation and can take several minutes in TCG mode).
     """
     deadline = time.monotonic() + 300
+    last_detail = ""
     while time.monotonic() < deadline:
-        r = _vm_ssh("cloud-init status 2>&1", timeout=15)
+        r = _vm_ssh("cloud-init status --long 2>&1", timeout=15)
+        remaining = int(deadline - time.monotonic())
+        # Compact multi-line status into a single progress line.
+        detail = " | ".join(
+            line.strip() for line in r.stdout.strip().splitlines() if line.strip()
+        )
+        if detail != last_detail:
+            _progress(f"cloud-init ({remaining}s left): {detail}")
+            last_detail = detail
+        else:
+            _progress(f"cloud-init ({remaining}s left): (unchanged)")
         if "status: done" in r.stdout:
+            _progress("cloud-init finished successfully")
             return
         if "status: error" in r.stdout:
-            detail = _vm_ssh("cloud-init status --long 2>&1", timeout=15)
-            pytest.fail(f"cloud-init finished with errors:\n{detail.stdout or r.stdout}")
+            pytest.fail(f"cloud-init finished with errors:\n{r.stdout}")
         time.sleep(10)
     pytest.fail("cloud-init did not complete within 300s")
 
@@ -269,8 +298,8 @@ def test_blocked_domain(running_vm):
         "bash -lc 'curl -s --max-time 15 http://cisco.com'",
         timeout=CURL_TIMEOUT,
     )
-    assert "Blocked by filter.py" in result.stdout, (
-        f"Expected a block response from filter.py for cisco.com but got:\n"
+    assert "PROXY BLOCK" in result.stdout, (
+        f"Expected a proxy block response for cisco.com but got:\n"
         f"stdout: {result.stdout[:500]}\n"
         f"stderr: {result.stderr[:500]}"
     )
@@ -287,25 +316,59 @@ def test_host_exposed_ports(running_vm):
     """
     # Derive the host IP and proxy port from the VM's proxy env var.
     r = _vm_ssh("bash -lc 'echo $http_proxy'", timeout=10)
-    proxy_url = r.stdout.strip()  # e.g. http://10.0.2.2:8090
+    proxy_url = r.stdout.strip()  # e.g. http://192.168.101.1:8090
     host_ip = proxy_url.split("//")[1].split(":")[0]
     proxy_port = int(proxy_url.split(":")[-1])
 
+    _progress(f"Starting nmap full port scan against {host_ip}")
+
     # Full port scan with aggressive timing (-T5). Host-side REJECT rules
-    # give instant responses so the aggressive timing is safe.  The scan
-    # still needs a generous timeout under TCG (no KVM) emulation.
-    result = _vm_ssh(
-        f"bash -lc 'nmap -p- -T5 --open {host_ip} -oG -'",
-        timeout=600,
+    # give instant responses so the aggressive timing is safe.
+    # --stats-every 15s prints periodic progress to stderr; we merge
+    # remote stderr into stdout so we can stream progress lines while
+    # collecting the grepable (-oG) output for parsing.
+    nmap_cmd = f"nmap -p- -T5 -v --stats-every 15s --open {host_ip} -oG - 2>&1"
+    proc = subprocess.Popen(
+        [sys.executable, str(VM_PY), "ssh", "--subnet", TEST_SUBNET, "--",
+         f"bash -lc '{nmap_cmd}'"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
 
+    stdout_lines: list[str] = []
+    scan_start = time.monotonic()
+    for line in proc.stdout:
+        stdout_lines.append(line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Print lines that indicate scan progress or results.
+        if any(kw in stripped for kw in [
+            "Stats:", "About ", "Completed", "scan report",
+            "/open/", "Nmap done",
+        ]):
+            scan_elapsed = int(time.monotonic() - scan_start)
+            _progress(f"nmap [{scan_elapsed}s]: {stripped}")
+
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+    scan_elapsed = int(time.monotonic() - scan_start)
+    _progress(f"nmap finished in {scan_elapsed}s")
+
+    stdout = "".join(stdout_lines)
+
     open_ports: set[int] = set()
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if "Ports:" in line:
             for part in line.split("Ports:")[1].split(","):
                 part = part.strip()
                 if "/open/" in part:
                     open_ports.add(int(part.split("/")[0]))
+
+    _progress(f"Open ports: {sorted(open_ports) if open_ports else 'none'}")
 
     unexpected = open_ports - {proxy_port}
     assert not unexpected, (
