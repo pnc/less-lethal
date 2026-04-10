@@ -1,12 +1,12 @@
 # Agent VM
 
-A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side mitmproxy, giving full visibility and control over what the guest can reach. Runs on macOS (socket_vmnet + HVF) and Linux (QEMU user networking + TCG/KVM).
+A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side mitmproxy, giving full visibility and control over what the guest can reach. Runs on macOS (socket_vmnet + HVF) and Linux (TAP/bridge + TCG/KVM).
 
 ## Usage
 
 **macOS prerequisites:** `brew install qemu socket_vmnet cdrtools mitmproxy`
 
-**Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage mitmproxy` (or x86 equivalents)
+**Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage iptables` (or x86 equivalents). Requires sudo for TAP/bridge setup.
 
 ```bash
 # Start mitmproxy and QEMU

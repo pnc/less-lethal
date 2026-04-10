@@ -1,2 +1,3 @@
-1. Extend the test suite to use nmap to see what ports are accessible on the host. The test should fail if anything besides the proxy port is exposed. (Add rationale that this protects the host machine from the VM.) [SKIPPED pending iptables/bridge isolation work on Linux]
+1. ~~Extend the test suite to use nmap to see what ports are accessible on the host.~~ Done — `test_host_exposed_ports` is now enforced via host-side iptables (Linux) and pf (macOS).
+2. Evaluate alternatives to using the `com.apple/agent-vm` pf anchor on macOS. Loading rules into `com.apple/*` works because macOS's default `/etc/pf.conf` evaluates that anchor, but piggy-backing on Apple's namespace feels fragile. Consider a dedicated anchor added to `/etc/pf.conf`, or a `pf.anchor` file loaded via `pfctl -f`.
 4. Simple is harder than complex. Review all code and propose 3 ways it can be simplified based on what you know now.

@@ -26,6 +26,10 @@ BOOT_TIMEOUT = 600   # seconds to wait for SSH to become available after start
 SSH_POLL_INTERVAL = 15  # seconds between SSH probe attempts
 CURL_TIMEOUT = 60    # seconds for the curl command itself
 
+# Use a different subnet from the default (192.168.100) so the test can run
+# inside a VM that is itself on the 192.168.100.0/24 subnet.
+TEST_SUBNET = "192.168.101"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,7 +45,7 @@ def _vm(*args: str, **kwargs) -> subprocess.CompletedProcess:
 
 def _vm_ssh(*cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a command in the VM via ssh, capturing output."""
-    return _vm("ssh", "--", *cmd, capture_output=True, text=True, timeout=timeout)
+    return _vm("ssh", "--subnet", TEST_SUBNET, "--", *cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _kill_all_vm_processes() -> None:
@@ -163,6 +167,7 @@ def running_vm():
     # Both inherit our file handles, so their output lands in console.log.
     vm_proc = subprocess.Popen(
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
+         "--subnet", TEST_SUBNET,
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
         stdout=console_f,
         stderr=console_f,
@@ -271,7 +276,6 @@ def test_blocked_domain(running_vm):
     )
 
 
-@pytest.mark.skip(reason="QEMU user networking exposes all host ports to guest; needs iptables/bridge isolation to fix")
 def test_host_exposed_ports(running_vm):
     """Only the proxy port should be reachable from the VM to the host.
 
@@ -287,11 +291,12 @@ def test_host_exposed_ports(running_vm):
     host_ip = proxy_url.split("//")[1].split(":")[0]
     proxy_port = int(proxy_url.split(":")[-1])
 
-    # Full port scan with fast timing (-T4). Catches anything open, not just
-    # a handpicked list.
+    # Full port scan with aggressive timing (-T5). Host-side REJECT rules
+    # give instant responses so the aggressive timing is safe.  The scan
+    # still needs a generous timeout under TCG (no KVM) emulation.
     result = _vm_ssh(
-        f"bash -lc 'nmap -p- -T4 --open {host_ip} -oG -'",
-        timeout=300,
+        f"bash -lc 'nmap -p- -T5 --open {host_ip} -oG -'",
+        timeout=600,
     )
 
     open_ports: set[int] = set()

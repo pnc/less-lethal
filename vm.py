@@ -66,25 +66,25 @@ class Arch(Enum):
 class Backend(ABC):
     """Abstracts platform-specific VM operations."""
 
-    def __init__(self, arch: Arch) -> None:
+    def __init__(self, arch: Arch, subnet: str) -> None:
         self.arch = arch
+        self._subnet = subnet
 
     # -- Network --
 
     @property
-    @abstractmethod
     def host_ip(self) -> str:
         """IP address the guest uses to reach the proxy on the host."""
+        return f"{self._subnet}.1"
 
     @property
-    @abstractmethod
     def ssh_host(self) -> str:
         """Hostname/IP to SSH to from the host."""
+        return f"{self._subnet}.2"
 
     @property
-    @abstractmethod
     def ssh_port(self) -> int:
-        """SSH port to connect to (may differ from 22 via port-forwarding)."""
+        return 22
 
     @abstractmethod
     def setup_network(self) -> None:
@@ -94,9 +94,20 @@ class Backend(ABC):
     def qemu_netdev_arg(self) -> str:
         """Return the full value of QEMU's -netdev flag."""
 
-    @abstractmethod
     def network_config_override(self) -> str | None:
         """Return a cloud-init network-config string, or None to use the file."""
+        return f"""\
+version: 2
+ethernets:
+  eth:
+    match:
+      macaddress: "52:54:00:12:34:56"
+    addresses:
+      - {self.ssh_host}/24
+    routes:
+      - to: default
+        via: {self.host_ip}
+"""
 
     # -- QEMU --
 
@@ -125,6 +136,10 @@ class Backend(ABC):
         """
 
     @abstractmethod
+    def teardown_network(self) -> None:
+        """Clean up host-side networking (firewall rules, devices) after QEMU exits."""
+
+    @abstractmethod
     def launch_qemu(self, qemu_args: list[str]) -> subprocess.Popen:
         """Launch QEMU, wrapping with any platform-specific launcher."""
 
@@ -136,60 +151,66 @@ class Backend(ABC):
 class DarwinBackend(Backend):
     """macOS backend: socket_vmnet for host-only networking, HVF acceleration."""
 
-    def __init__(self, brew: Path, arch: Arch) -> None:
-        super().__init__(arch)
+    _PF_ANCHOR = "com.apple/agent-vm"
+
+    def __init__(self, brew: Path, arch: Arch, subnet: str) -> None:
+        super().__init__(arch, subnet)
         self._brew = brew
 
     # -- Network --
 
-    @property
-    def host_ip(self) -> str:
-        return "192.168.100.1"
-
-    @property
-    def ssh_host(self) -> str:
-        return "192.168.100.2"
-
-    @property
-    def ssh_port(self) -> int:
-        return 22
-
     def setup_network(self) -> None:
         socket_path = self._socket_path
-        if socket_path.is_socket():
-            return
+        if not socket_path.is_socket():
+            socket_vmnet = self._brew / "opt/socket_vmnet/bin/socket_vmnet"
+            if not socket_vmnet.exists():
+                sys.exit("socket_vmnet not found. Install via: brew install socket_vmnet")
 
-        socket_vmnet = self._brew / "opt/socket_vmnet/bin/socket_vmnet"
-        if not socket_vmnet.exists():
-            sys.exit("socket_vmnet not found. Install via: brew install socket_vmnet")
+            socket_dir = socket_path.parent
+            sys.exit(
+                f"socket_vmnet is not running (socket not found at {socket_path}).\n"
+                "\n"
+                "Start it in a separate terminal before running vm.py:\n"
+                "\n"
+                f"  sudo mkdir -p {socket_dir}\n"
+                f"  sudo chown $USER {socket_dir}\n"
+                f"  sudo chmod 700 {socket_dir}\n"
+                f"  sudo {socket_vmnet} \\\n"
+                f"      --vmnet-mode=host \\\n"
+                f"      --vmnet-gateway={self.host_ip} \\\n"
+                f"      --vmnet-dhcp-end={self._subnet}.254 \\\n"
+                f"      --vmnet-mask=255.255.255.0 \\\n"
+                f"      {socket_path}\n"
+                "\n"
+                "Verify the socket exists before continuing:\n"
+                f"  ls -la {socket_path}\n"
+                "\n"
+                "socket_vmnet is open source: https://github.com/lima-vm/socket_vmnet"
+            )
 
-        socket_dir = socket_path.parent
-        sys.exit(
-            f"socket_vmnet is not running (socket not found at {socket_path}).\n"
-            "\n"
-            "Start it in a separate terminal before running vm.py:\n"
-            "\n"
-            f"  sudo mkdir -p {socket_dir}\n"
-            f"  sudo chown $USER {socket_dir}\n"
-            f"  sudo chmod 700 {socket_dir}\n"
-            f"  sudo {socket_vmnet} \\\n"
-            f"      --vmnet-mode=host \\\n"
-            f"      --vmnet-gateway=192.168.100.1 \\\n"
-            f"      --vmnet-dhcp-end=192.168.100.254 \\\n"
-            f"      --vmnet-mask=255.255.255.0 \\\n"
-            f"      {socket_path}\n"
-            "\n"
-            "Verify the socket exists before continuing:\n"
-            f"  ls -la {socket_path}\n"
-            "\n"
-            "socket_vmnet is open source: https://github.com/lima-vm/socket_vmnet"
+        # Host-side pf firewall: only the proxy port is reachable from the
+        # guest.  Rules are loaded into the com.apple/agent-vm anchor which
+        # is evaluated by macOS's default "anchor com.apple/*" rule — no
+        # modification of /etc/pf.conf is needed.
+        pf_rules = (
+            f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {PROXY_PORT}\n"
+            f"block in quick proto tcp from {self._subnet}.0/24 to {self.host_ip}\n"
+        )
+        subprocess.run(
+            ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-f", "-"],
+            input=pf_rules, text=True, check=True, capture_output=True,
+        )
+        # Enable pf (reference-counted; harmless if already enabled).
+        subprocess.run(["sudo", "pfctl", "-E"], capture_output=True)
+
+    def teardown_network(self) -> None:
+        subprocess.run(
+            ["sudo", "pfctl", "-a", self._PF_ANCHOR, "-F", "all"],
+            capture_output=True,
         )
 
     def qemu_netdev_arg(self) -> str:
         return "socket,id=net0,fd=3"
-
-    def network_config_override(self) -> str | None:
-        return None  # use cloud-init/network-config as-is
 
     # -- QEMU --
 
@@ -228,42 +249,71 @@ class DarwinBackend(Backend):
 # ---------------------------------------------------------------------------
 
 class LinuxBackend(Backend):
-    """Linux backend: QEMU user networking, KVM (or TCG) acceleration."""
+    """Linux backend: TAP/bridge networking with host-side iptables, KVM (or TCG) acceleration."""
 
-    def __init__(self, arch: Arch) -> None:
-        super().__init__(arch)
+    _BRIDGE = "vm-br0"
+    _TAP = "vm-tap0"
+
+    def __init__(self, arch: Arch, subnet: str) -> None:
+        super().__init__(arch, subnet)
         self._accel = "kvm" if Path("/dev/kvm").exists() else "tcg"
 
     # -- Network --
 
-    @property
-    def host_ip(self) -> str:
-        return "10.0.2.2"  # QEMU user-networking gateway
-
-    @property
-    def ssh_host(self) -> str:
-        return "127.0.0.1"
-
-    @property
-    def ssh_port(self) -> int:
-        return 2222
-
     def setup_network(self) -> None:
-        pass  # user networking is built into QEMU, nothing to start
+        """Create bridge + TAP device and add host-side iptables rules.
+
+        All commands use sudo.  The bridge gives the guest a dedicated L2
+        segment and the iptables rules ensure only the proxy port is
+        reachable on the host — everything else is rejected.
+        """
+        br, tap = self._BRIDGE, self._TAP
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "root"
+
+        # -- Bridge --
+        if not Path(f"/sys/class/net/{br}").exists():
+            _sudo("ip", "link", "add", br, "type", "bridge")
+            _sudo("ip", "addr", "add", f"{self.host_ip}/24", "dev", br)
+            _sudo("ip", "link", "set", br, "up")
+
+        # -- TAP device (owned by the current user so QEMU can open it) --
+        if not Path(f"/sys/class/net/{tap}").exists():
+            _sudo("ip", "tuntap", "add", "dev", tap, "mode", "tap", "user", user)
+            _sudo("ip", "link", "set", tap, "master", br)
+            _sudo("ip", "link", "set", tap, "up")
+
+        # -- iptables: only proxy port reachable from bridge --
+        for rule in self._iptables_rules():
+            # -C checks existence; add only if missing (idempotent).
+            if subprocess.run(
+                ["sudo", "iptables", "-C", *rule],
+                capture_output=True,
+            ).returncode != 0:
+                _sudo("iptables", "-A", *rule)
+
+    def teardown_network(self) -> None:
+        br, tap = self._BRIDGE, self._TAP
+
+        for rule in self._iptables_rules():
+            subprocess.run(["sudo", "iptables", "-D", *rule], capture_output=True)
+
+        if Path(f"/sys/class/net/{tap}").exists():
+            _sudo("ip", "link", "del", tap)
+        if Path(f"/sys/class/net/{br}").exists():
+            _sudo("ip", "link", "del", br)
+
+    def _iptables_rules(self) -> list[list[str]]:
+        """Return the iptables rule specs (without -A/-C/-D prefix)."""
+        br = self._BRIDGE
+        return [
+            ["INPUT", "-i", br, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+            ["INPUT", "-i", br, "-p", "tcp", "--dport", str(PROXY_PORT), "-j", "ACCEPT"],
+            ["INPUT", "-i", br, "-j", "REJECT"],
+            ["FORWARD", "-i", br, "-j", "REJECT"],
+        ]
 
     def qemu_netdev_arg(self) -> str:
-        return f"user,id=net0,hostfwd=tcp::{self.ssh_port}-:22"
-
-    def network_config_override(self) -> str | None:
-        """Use DHCP — QEMU user networking provides it at 10.0.2.15."""
-        return """\
-version: 2
-ethernets:
-  eth:
-    match:
-      macaddress: "52:54:00:12:34:56"
-    dhcp4: true
-"""
+        return f"tap,id=net0,ifname={self._TAP},script=no,downscript=no"
 
     # -- QEMU --
 
@@ -303,13 +353,18 @@ ethernets:
 # Backend factory
 # ---------------------------------------------------------------------------
 
-def make_backend() -> Backend:
+def _sudo(*args: str) -> None:
+    """Run a command via sudo, raising on failure."""
+    subprocess.run(["sudo", *args], check=True)
+
+
+def make_backend(subnet: str = "192.168.100") -> Backend:
     arch = Arch.detect()
 
     if sys.platform == "darwin":
-        return DarwinBackend(brew=_brew_prefix(), arch=arch)
+        return DarwinBackend(brew=_brew_prefix(), arch=arch, subnet=subnet)
     elif sys.platform == "linux":
-        return LinuxBackend(arch=arch)
+        return LinuxBackend(arch=arch, subnet=subnet)
     else:
         sys.exit(f"Unsupported OS: {sys.platform}")
 
@@ -475,7 +530,7 @@ def start_mitmproxy() -> subprocess.Popen:
 # ---------------------------------------------------------------------------
 
 def cmd_start(args: argparse.Namespace) -> None:
-    backend = make_backend()
+    backend = make_backend(subnet=args.subnet)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -507,13 +562,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     finally:
         mitm.terminate()
         mitm.wait()
+        backend.teardown_network()
 
     if qemu_rc != 0:
         sys.exit(f"QEMU exited with code {qemu_rc}")
 
 
 def cmd_ssh(args: argparse.Namespace) -> None:
-    backend = make_backend()
+    backend = make_backend(subnet=args.subnet)
     key = STATE_DIR / "id_ed25519"
     os.execvp("ssh", [
         "ssh",
@@ -554,10 +610,20 @@ def main() -> None:
         help="Extra cloud-init user-data file merged with the base config "
              "(packages, runcmd, write_files, etc. are appended)",
     )
+    start_p.add_argument(
+        "--subnet", default="192.168.100", metavar="PREFIX",
+        help="First three octets of the VM subnet (default: 192.168.100). "
+             "Host gets .1, guest gets .2. Change to avoid collisions "
+             "when running inside another VM on the same subnet.",
+    )
     sub.add_parser("reset", help="Destroy ephemeral VM state (keeps base image and SSH key)")
 
     ssh_p = sub.add_parser("ssh", help="SSH into the VM")
     ssh_p.add_argument("cmd", nargs=argparse.REMAINDER, help="Optional command to run in VM")
+    ssh_p.add_argument(
+        "--subnet", default="192.168.100", metavar="PREFIX",
+        help="Must match the --subnet used with start (default: 192.168.100).",
+    )
 
     args = parser.parse_args()
 

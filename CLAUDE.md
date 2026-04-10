@@ -10,6 +10,8 @@ uv run pytest tests/test_e2e.py -v -s
 
 The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
 
+The full suite including the nmap port-isolation test can take 10+ minutes under TCG emulation. Run the tests in the background and use the **Monitor** tool to stream results rather than blocking on a single long-running Bash call.
+
 ## Tooling policy
 
 Use **uv** for all Python tasks (running scripts, managing dependencies, virtual environments). Install uv from its official binary release — never via pip, conda, or similar tools. Do not use pip, conda, pipx, or any other Python package manager.
