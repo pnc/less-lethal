@@ -26,9 +26,10 @@ BOOT_TIMEOUT = 600   # seconds to wait for SSH to become available after start
 SSH_POLL_INTERVAL = 15  # seconds between SSH probe attempts
 CURL_TIMEOUT = 60    # seconds for the curl command itself
 
-# Use a different subnet from the default (192.168.100) so the test can run
-# inside a VM that is itself on the 192.168.100.0/24 subnet.
+# Use a different subnet and proxy port from the defaults so tests don't
+# collide with a user's running VM on the default 192.168.100.0/24 subnet.
 TEST_SUBNET = "192.168.101"
+TEST_PROXY_PORT = 8091
 
 # Module-level start time, set once the VM starts booting.
 _t0: float = 0.0
@@ -74,6 +75,8 @@ def _kill_all_vm_processes() -> None:
     # Also catch orphaned socket_vmnet_client wrappers (macOS) whose
     # command line includes the subnet-specific socket path.
     subprocess.run(["pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}.*qemu"], capture_output=True)
+    # Kill mitmdump on the test port only (not a user's default-port proxy).
+    subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"], capture_output=True)
     time.sleep(2)  # allow ports to be released
 
 
@@ -156,7 +159,7 @@ def running_vm():
                 f"{socket_path}"
             )
 
-    # Kill any stray processes from a previous run before touching port 8090
+    # Kill any stray processes from a previous test run
     _kill_all_vm_processes()
 
     # Start from a known clean state
@@ -194,6 +197,7 @@ def running_vm():
     vm_proc = subprocess.Popen(
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
          "--subnet", TEST_SUBNET,
+         "--proxy-port", str(TEST_PROXY_PORT),
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
         stdout=console_f,
         stderr=console_f,

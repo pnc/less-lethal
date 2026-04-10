@@ -66,9 +66,10 @@ class Arch(Enum):
 class Backend(ABC):
     """Abstracts platform-specific VM operations."""
 
-    def __init__(self, arch: Arch, subnet: str) -> None:
+    def __init__(self, arch: Arch, subnet: str, proxy_port: int = PROXY_PORT) -> None:
         self.arch = arch
         self._subnet = subnet
+        self.proxy_port = proxy_port
 
     # -- Network --
 
@@ -153,8 +154,8 @@ class DarwinBackend(Backend):
 
     _PF_ANCHOR = "com.apple/agent-vm"
 
-    def __init__(self, brew: Path, arch: Arch, subnet: str) -> None:
-        super().__init__(arch, subnet)
+    def __init__(self, brew: Path, arch: Arch, subnet: str, proxy_port: int = PROXY_PORT) -> None:
+        super().__init__(arch, subnet, proxy_port)
         self._brew = brew
 
     # -- Network --
@@ -213,7 +214,7 @@ class DarwinBackend(Backend):
         # is evaluated by macOS's default "anchor com.apple/*" rule — no
         # modification of /etc/pf.conf is needed.
         pf_rules = (
-            f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {PROXY_PORT}\n"
+            f"pass in quick proto tcp from {self.ssh_host} to {self.host_ip} port {self.proxy_port}\n"
             f"block in quick proto tcp from {self._subnet}.0/24 to {self.host_ip}\n"
         )
         subprocess.run(
@@ -280,8 +281,8 @@ class LinuxBackend(Backend):
     _BRIDGE = "vm-br0"
     _TAP = "vm-tap0"
 
-    def __init__(self, arch: Arch, subnet: str) -> None:
-        super().__init__(arch, subnet)
+    def __init__(self, arch: Arch, subnet: str, proxy_port: int = PROXY_PORT) -> None:
+        super().__init__(arch, subnet, proxy_port)
         self._accel = "kvm" if Path("/dev/kvm").exists() else "tcg"
 
     # -- Network --
@@ -333,7 +334,7 @@ class LinuxBackend(Backend):
         br = self._BRIDGE
         return [
             ["INPUT", "-i", br, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
-            ["INPUT", "-i", br, "-p", "tcp", "--dport", str(PROXY_PORT), "-j", "ACCEPT"],
+            ["INPUT", "-i", br, "-p", "tcp", "--dport", str(self.proxy_port), "-j", "ACCEPT"],
             ["INPUT", "-i", br, "-j", "REJECT"],
             ["FORWARD", "-i", br, "-j", "REJECT"],
         ]
@@ -384,13 +385,13 @@ def _sudo(*args: str) -> None:
     subprocess.run(["sudo", *args], check=True)
 
 
-def make_backend(subnet: str = "192.168.100") -> Backend:
+def make_backend(subnet: str = "192.168.100", proxy_port: int = PROXY_PORT) -> Backend:
     arch = Arch.detect()
 
     if sys.platform == "darwin":
-        return DarwinBackend(brew=_brew_prefix(), arch=arch, subnet=subnet)
+        return DarwinBackend(brew=_brew_prefix(), arch=arch, subnet=subnet, proxy_port=proxy_port)
     elif sys.platform == "linux":
-        return LinuxBackend(arch=arch, subnet=subnet)
+        return LinuxBackend(arch=arch, subnet=subnet, proxy_port=proxy_port)
     else:
         sys.exit(f"Unsupported OS: {sys.platform}")
 
@@ -449,7 +450,7 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
                 content = src.read_text()
                 content = content.replace("__SSH_PUB_KEY__", ssh_pub)
                 content = content.replace("__HOST_IP__", backend.host_ip)
-                content = content.replace("__PROXY_PORT__", str(PROXY_PORT))
+                content = content.replace("__PROXY_PORT__", str(backend.proxy_port))
                 if src.name == "user-data" and extra_user_data is not None:
                     # Merge base + extra via MIME multi-part.
                     # merge_how tells cloud-init to append list keys (packages,
@@ -515,10 +516,10 @@ def build_qemu_args(backend: Backend, memory: str) -> list[str]:
     return args
 
 
-def start_mitmproxy() -> subprocess.Popen:
+def start_mitmproxy(proxy_port: int = PROXY_PORT) -> subprocess.Popen:
     """Start mitmdump in the background, logging to .vm/mitmdump.log."""
     log_path = STATE_DIR / "mitmdump.log"
-    cmd = ["mitmdump", "--listen-host", "0.0.0.0", "-p", str(PROXY_PORT)]
+    cmd = ["mitmdump", "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
 
     # If this host itself uses an upstream proxy (e.g. we're inside a sandboxed
     # VM), forward mitmproxy's own outbound traffic through it.
@@ -539,14 +540,14 @@ def start_mitmproxy() -> subprocess.Popen:
         cmd += ["--script", str(filter_script)]
 
     log_file = log_path.open("w")
-    print(f"Starting mitmproxy on port {PROXY_PORT} (log: .vm/mitmdump.log)...")
+    print(f"Starting mitmproxy on port {proxy_port} (log: .vm/mitmdump.log)...")
     proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
     time.sleep(1)
     if proc.poll() is not None:
         log_file.flush()
         sys.exit(
             f"mitmdump failed to start (exit code {proc.returncode}). "
-            f"Check {log_path} — port {PROXY_PORT} may already be in use."
+            f"Check {log_path} — port {proxy_port} may already be in use."
         )
     return proc
 
@@ -556,7 +557,7 @@ def start_mitmproxy() -> subprocess.Popen:
 # ---------------------------------------------------------------------------
 
 def cmd_start(args: argparse.Namespace) -> None:
-    backend = make_backend(subnet=args.subnet)
+    backend = make_backend(subnet=args.subnet, proxy_port=args.proxy_port)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -569,11 +570,11 @@ def cmd_start(args: argparse.Namespace) -> None:
     extra = Path(args.extra_user_data) if args.extra_user_data else None
     build_seed_iso(backend, extra_user_data=extra)
 
-    mitm = start_mitmproxy()
+    mitm = start_mitmproxy(proxy_port=backend.proxy_port)
 
     print(f"\nStarting VM...")
     print(f"  SSH:      ./vm.py ssh")
-    print(f"  Proxy:    http://{backend.host_ip}:{PROXY_PORT} (from guest)")
+    print(f"  Proxy:    http://{backend.host_ip}:{backend.proxy_port} (from guest)")
     print(f"  Logs:     tail -f .vm/mitmdump.log")
     print(f"  Quit:     Ctrl-A X")
     print()
@@ -641,6 +642,11 @@ def main() -> None:
         help="First three octets of the VM subnet (default: 192.168.100). "
              "Host gets .1, guest gets .2. Change to avoid collisions "
              "when running inside another VM on the same subnet.",
+    )
+    start_p.add_argument(
+        "--proxy-port", default=PROXY_PORT, type=int, metavar="PORT",
+        help=f"Port for the mitmproxy listener (default: {PROXY_PORT}). "
+             "Change to run multiple VMs simultaneously on different subnets.",
     )
     sub.add_parser("reset", help="Destroy ephemeral VM state (keeps base image and SSH key)")
 
