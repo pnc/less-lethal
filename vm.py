@@ -188,6 +188,26 @@ class DarwinBackend(Backend):
                 "socket_vmnet is open source: https://github.com/lima-vm/socket_vmnet"
             )
 
+        # Verify the expected gateway IP is assigned to a local interface.
+        # socket_vmnet assigns --vmnet-gateway to a bridge interface; if the
+        # daemon was started with a different gateway, the guest won't be
+        # able to reach the host and SSH probes will silently fail.
+        result = subprocess.run(["ifconfig"], capture_output=True, text=True)
+        if f"inet {self.host_ip} " not in result.stdout:
+            sys.exit(
+                f"socket_vmnet appears to be running on a different subnet.\n"
+                f"Expected {self.host_ip} on a local interface, but it was not found.\n"
+                "\n"
+                "Restart socket_vmnet with the matching gateway:\n"
+                "\n"
+                f"  sudo {self._brew}/opt/socket_vmnet/bin/socket_vmnet \\\n"
+                f"      --vmnet-mode=host \\\n"
+                f"      --vmnet-gateway={self.host_ip} \\\n"
+                f"      --vmnet-dhcp-end={self._subnet}.254 \\\n"
+                f"      --vmnet-mask=255.255.255.0 \\\n"
+                f"      {socket_path}\n"
+            )
+
         # Host-side pf firewall: only the proxy port is reachable from the
         # guest.  Rules are loaded into the com.apple/agent-vm anchor which
         # is evaluated by macOS's default "anchor com.apple/*" rule — no
@@ -241,7 +261,13 @@ class DarwinBackend(Backend):
 
     @property
     def _socket_path(self) -> Path:
-        return self._brew / "var/run/socket_vmnet.host"
+        # Each subnet gets its own socket so multiple instances can coexist
+        # (e.g. a long-running default VM on 192.168.100 alongside a test
+        # run on 192.168.101).  The default subnet keeps the conventional
+        # name for backward compatibility with existing setups.
+        if self._subnet == "192.168.100":
+            return self._brew / "var/run/socket_vmnet.host"
+        return self._brew / f"var/run/socket_vmnet.{self._subnet}"
 
 
 # ---------------------------------------------------------------------------

@@ -63,9 +63,17 @@ def _vm_ssh(*cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
 
 
 def _kill_all_vm_processes() -> None:
-    """Kill any stray qemu-system-* and mitmdump processes."""
-    subprocess.run(["pkill", "-f", "qemu-system-"], capture_output=True)
-    subprocess.run(["pkill", "-f", "mitmdump"], capture_output=True)
+    """Kill stray processes from a previous test run.
+
+    Targets the vm.py parent (which has --subnet in its args) rather than
+    broadly killing all qemu-system-* processes, so a user's running VM on
+    the default subnet is not disrupted.  vm.py's finally block propagates
+    SIGTERM to its QEMU and mitmdump children.
+    """
+    subprocess.run(["pkill", "-f", f"vm\\.py.*--subnet.*{TEST_SUBNET}"], capture_output=True)
+    # Also catch orphaned socket_vmnet_client wrappers (macOS) whose
+    # command line includes the subnet-specific socket path.
+    subprocess.run(["pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}.*qemu"], capture_output=True)
     time.sleep(2)  # allow ports to be released
 
 
@@ -138,13 +146,13 @@ def running_vm():
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             pytest.skip("Homebrew not found — cannot locate socket_vmnet")
-        socket_path = brew_prefix / "var/run/socket_vmnet.host"
+        socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
         if not socket_path.is_socket():
             pytest.skip(
-                "socket_vmnet not running — start it first with:\n"
+                "socket_vmnet not running for test subnet — start it with:\n"
                 f"  sudo {brew_prefix}/opt/socket_vmnet/bin/socket_vmnet "
-                "--vmnet-mode=host --vmnet-gateway=192.168.100.1 "
-                "--vmnet-dhcp-end=192.168.100.254 --vmnet-mask=255.255.255.0 "
+                f"--vmnet-mode=host --vmnet-gateway={TEST_SUBNET}.1 "
+                f"--vmnet-dhcp-end={TEST_SUBNET}.254 --vmnet-mask=255.255.255.0 "
                 f"{socket_path}"
             )
 
