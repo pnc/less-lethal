@@ -8,7 +8,11 @@ Always run the test suite before committing:
 uv run pytest tests/test_e2e.py -v -s
 ```
 
-The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl http://example.com` works through mitmproxy. Do not commit if this fails.
+The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
+
+## Tooling policy
+
+Use **uv** for all Python tasks (running scripts, managing dependencies, virtual environments). Install uv from its official binary release — never via pip, conda, or similar tools. Do not use pip, conda, pipx, or any other Python package manager.
 
 ## What this project is
 

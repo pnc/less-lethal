@@ -12,7 +12,7 @@ from mitmproxy import http
 
 # Domains the VM is allowed to reach.
 # Examples:
-#   "example.com"          — exact hostname match
+#   "pypi.org"             — exact hostname match
 #   r".*\.debian\.org"     — regex: any debian.org subdomain
 ALLOWED: list[str] = [
     r".*\.debian\.org",
@@ -24,9 +24,6 @@ ALLOWED: list[str] = [
     "files.pythonhosted.org",
     # mitmproxy's magic domain that serves the CA cert
     "mitm.it",
-    # Standard test domain (RFC 2606 / IANA)
-    "example.com",
-    "www.example.com",
 ]
 
 _patterns = [re.compile(p) for p in ALLOWED]

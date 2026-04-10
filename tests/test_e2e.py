@@ -216,12 +216,12 @@ def test_cloud_init_success(running_vm):
     pytest.fail("cloud-init did not complete within 300s")
 
 
-def test_curl_example_com(running_vm):
-    """curl http://example.com from the guest should return the IANA example page."""
+def test_curl_http_pypi_org(running_vm):
+    """curl -L http://pypi.org from the guest should reach PyPI (follows redirect to HTTPS)."""
     # Pass as a single string so SSH doesn't split it.  bash -lc sources
     # /etc/profile.d/proxy.sh which sets http_proxy for the curl call.
     result = _vm_ssh(
-        "bash -lc 'curl -fsS --max-time 15 http://example.com'",
+        "bash -lc 'curl -fsSL --max-time 15 http://pypi.org'",
         timeout=CURL_TIMEOUT,
     )
 
@@ -233,16 +233,16 @@ def test_curl_example_com(running_vm):
             f"stderr: {result.stderr[:500]}"
         )
 
-    assert "Example Domain" in result.stdout, (
-        f"'Example Domain' not found in curl output.\n"
+    assert "PyPI" in result.stdout, (
+        f"'PyPI' not found in curl output.\n"
         f"stdout: {result.stdout[:1000]}"
     )
 
 
-def test_curl_https_example_com(running_vm):
-    """curl https://example.com should succeed, verifying HTTPS works through the proxy."""
+def test_curl_https_pypi_org(running_vm):
+    """curl https://pypi.org should succeed, verifying HTTPS works through the proxy."""
     result = _vm_ssh(
-        "bash -lc 'curl -fsS --max-time 15 https://example.com'",
+        "bash -lc 'curl -fsS --max-time 15 https://pypi.org'",
         timeout=CURL_TIMEOUT,
     )
     if result.returncode != 0:
@@ -252,8 +252,8 @@ def test_curl_https_example_com(running_vm):
             f"stdout: {result.stdout[:500]}\n"
             f"stderr: {result.stderr[:500]}"
         )
-    assert "Example Domain" in result.stdout, (
-        f"'Example Domain' not found in HTTPS curl output.\n"
+    assert "PyPI" in result.stdout, (
+        f"'PyPI' not found in HTTPS curl output.\n"
         f"stdout: {result.stdout[:1000]}"
     )
 

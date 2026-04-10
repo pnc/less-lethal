@@ -48,7 +48,7 @@ uv run pytest tests/test_e2e.py -v -s
 This takes ~90 seconds without KVM (TCG software emulation). It:
 - Resets VM state and boots a fresh VM
 - Verifies cloud-init completes cleanly
-- Verifies `curl http://example.com` and `curl https://example.com` work through the proxy
+- Verifies `curl http://pypi.org` and `curl https://pypi.org` work through the proxy
 - Verifies blocked domains (e.g. `cisco.com`) return a 403 from `filter.py`
 
 On macOS, the test skips automatically if `socket_vmnet` is not running.
