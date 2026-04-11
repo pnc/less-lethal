@@ -28,18 +28,16 @@ from mitmproxy import http
 # Full-domain allowlist for system infrastructure.  Patterns are
 # matched with re.fullmatch against the request hostname.
 TRUSTED_DOMAINS: list[str] = [
-    # OS package repos
+    # OS package repos — scoped to actual apt hostnames
     r".*\.debian\.org",
-    "deb.debian.org",
-    "security.debian.org",
-    r".*\.ubuntu\.com",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "ports.ubuntu.com",
+    r".*\.archive\.ubuntu\.com",
     # Python package repos
     "pypi.org",
     r".*\.pypi\.org",
     "files.pythonhosted.org",
-    # Claude Code: web UI and platform
-    "claude.ai",
-    "platform.claude.com",
     # mitmproxy's magic domain that serves the CA cert
     "mitm.it",
 ]
