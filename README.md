@@ -26,7 +26,12 @@ brew install qemu mitmproxy uv
 
 # Linux (ARM64 — use qemu-system-x86 on amd64 hosts)
 sudo apt install qemu-system-arm qemu-efi-aarch64 genisoimage netcat-openbsd mitmproxy
-curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# uv — download the binary from GitHub (pick your arch)
+curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-unknown-linux-gnu.tar.gz \
+  | tar xz -C ~/.local/bin --strip-components=1
+# For x86_64, use uv-x86_64-unknown-linux-gnu.tar.gz instead.
+# Make sure ~/.local/bin is on your PATH.
 ```
 
 Then launch the VM:

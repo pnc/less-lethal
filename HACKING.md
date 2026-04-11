@@ -26,8 +26,11 @@ sudo apt install genisoimage    # provides mkisofs
 # netcat for slirp guestfwd proxy forwarding
 sudo apt install netcat-openbsd
 
-# uv (Python script runner / package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv — download the binary from GitHub (pick your arch)
+curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-unknown-linux-gnu.tar.gz \
+  | tar xz -C ~/.local/bin --strip-components=1
+# For x86_64, use uv-x86_64-unknown-linux-gnu.tar.gz instead.
+# Make sure ~/.local/bin is on your PATH.
 ```
 
 No sudo is required to run the VM or the test suite.

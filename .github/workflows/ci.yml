@@ -13,7 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+        run: |
+          curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /usr/local/bin --strip-components=1
       - run: uv run pytest tests/test_filter.py -v
 
   e2e-linux:
@@ -22,7 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+        run: |
+          curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /usr/local/bin --strip-components=1
 
       - name: Install QEMU and dependencies
         run: |
@@ -53,7 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+        run: |
+          curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz \
+            | tar xz -C /usr/local/bin --strip-components=1
 
       - name: Install QEMU and mitmproxy
         run: brew install qemu mitmproxy
