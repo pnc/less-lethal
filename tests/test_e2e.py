@@ -237,10 +237,15 @@ def test_cloud_init_success(running_vm):
     SSH subprocess open during the entire cloud-init run (which includes
     package installation and can take several minutes in TCG mode).
     """
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 600
     last_detail = ""
     while time.monotonic() < deadline:
-        r = _vm_ssh("cloud-init status --long 2>&1", timeout=15)
+        try:
+            r = _vm_ssh("cloud-init status --long 2>&1", timeout=30)
+        except subprocess.TimeoutExpired:
+            remaining = int(deadline - time.monotonic())
+            _progress(f"cloud-init ({remaining}s left): (SSH timed out, retrying)")
+            continue
         remaining = int(deadline - time.monotonic())
         # Compact multi-line status into a single progress line.
         detail = " | ".join(
