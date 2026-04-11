@@ -1,4 +1,4 @@
-# Agent VM
+# less-lethal: userspace LLM agent VM
 
 A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (Hypervisor.framework) and Linux (KVM or software emulation). No sudo required.
 
