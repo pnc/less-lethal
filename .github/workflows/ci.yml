@@ -19,8 +19,8 @@ jobs:
       - run: uv run pytest tests/test_filter.py -v
 
   e2e-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-latest-m  # KVM-enabled, ~90s vs ~4min under TCG
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -52,7 +52,7 @@ jobs:
             ${{ runner.temp }}/vm-state/mitmdump.log
 
   e2e-macos:
-    runs-on: macos-latest
+    runs-on: macos-latest-xlarge
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
