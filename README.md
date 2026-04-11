@@ -14,7 +14,7 @@ This VM provides (1) and (2) but constrains (3): all traffic passes through a hu
 
 ### Why a VM instead of Docker?
 
-Docker containers share the host kernel and were not designed as a security boundary — container escapes are a [well-known attack class](https://web.archive.org/web/2025/https://www.docker.com/blog/docker-security-best-practices/) (Docker has since redirected this article to one titled "Docker Sandboxes: Run Agents in YOLO Mode, Safely"). A real VM provides hardware-level isolation via QEMU. It also means the agent can work on projects that themselves use Docker, without the complexity of Docker-in-Docker.
+Docker containers share the host kernel and were not designed as a security boundary — container escapes are a [well-known attack class](https://nvd.nist.gov/vuln/detail/CVE-2019-5736). A real VM provides hardware-level isolation via QEMU. It also means the agent can work on projects that themselves use Docker, without the complexity of Docker-in-Docker.
 
 ## Quick start
 
