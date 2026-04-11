@@ -16,6 +16,9 @@
 # ── Claude Code ────────────────────────────────────────────────────
 # Anthropic API — scoped to the v1 API prefix so only API calls are
 # permitted, not arbitrary requests to the domain.
+GET https://claude.ai/install.sh
+GET https://platform.claude.com/v1/oauth/hello
+POST https://platform.claude.com/v1/oauth/token
 POST https://api.anthropic.com/v1/*
 GET  https://api.anthropic.com/v1/*
 GET https://api.anthropic.com/api/*
