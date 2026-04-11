@@ -32,7 +32,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 genisoimage netcat-openbsd
+            qemu-system-x86 qemu-utils genisoimage netcat-openbsd
 
       - name: Install mitmproxy
         run: uv tool install mitmproxy
