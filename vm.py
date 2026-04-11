@@ -147,18 +147,27 @@ ethernets:
 # ---------------------------------------------------------------------------
 
 class DarwinBackend(Backend):
-    """macOS backend: HVF acceleration, Homebrew firmware paths."""
+    """macOS backend: HVF acceleration (with TCG fallback), Homebrew firmware paths."""
 
     def __init__(self, brew: Path, arch: Arch, proxy_port: int = PROXY_PORT,
                  ssh_host_port: int = SSH_HOST_PORT) -> None:
         super().__init__(arch, proxy_port, ssh_host_port)
         self._brew = brew
+        override = os.environ.get("QEMU_ACCEL")
+        if override:
+            self._accel = override
+        else:
+            r = subprocess.run(["sysctl", "-n", "kern.hv_support"],
+                               capture_output=True, text=True)
+            self._accel = "hvf" if r.returncode == 0 and r.stdout.strip() == "1" else "tcg"
 
     @property
     def machine_args(self) -> list[str]:
         if self.arch == Arch.ARM64:
-            return ["-machine", "virt,accel=hvf", "-cpu", "host"]
-        return ["-machine", "q35,accel=hvf", "-cpu", "host"]
+            cpu = "host" if self._accel == "hvf" else "cortex-a57"
+            return ["-machine", f"virt,accel={self._accel}", "-cpu", cpu]
+        cpu = "host" if self._accel == "hvf" else "qemu64"
+        return ["-machine", f"q35,accel={self._accel}", "-cpu", cpu]
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
         code_src = self._brew / "share/qemu/edk2-aarch64-code.fd"
