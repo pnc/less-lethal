@@ -36,6 +36,10 @@ The tests boot a real VM under TCG emulation (~90s without KVM, faster with
 `/dev/kvm` available). They use `--ssh-port 2223` and `--proxy-port 8091`
 to avoid colliding with a running default VM.
 
+Nested execution works: the test suite runs fine from inside the VM
+itself (QEMU under TCG within QEMU). This means Claude Code sessions
+inside the VM can and should run the e2e tests before committing.
+
 ### Running alongside a live VM
 
 The test suite uses different ports (8091/2223) from the defaults
