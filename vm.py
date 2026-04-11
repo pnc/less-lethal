@@ -187,7 +187,13 @@ class LinuxBackend(Backend):
     def __init__(self, arch: Arch, proxy_port: int = PROXY_PORT,
                  ssh_host_port: int = SSH_HOST_PORT) -> None:
         super().__init__(arch, proxy_port, ssh_host_port)
-        self._accel = "kvm" if Path("/dev/kvm").exists() else "tcg"
+        override = os.environ.get("QEMU_ACCEL")
+        if override:
+            self._accel = override
+        elif os.access("/dev/kvm", os.R_OK | os.W_OK):
+            self._accel = "kvm"
+        else:
+            self._accel = "tcg"
 
     @property
     def machine_args(self) -> list[str]:
