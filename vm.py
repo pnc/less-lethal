@@ -461,13 +461,17 @@ def start_mitmproxy(proxy_port: int = PROXY_PORT) -> subprocess.Popen:
     log_file = log_path.open("w")
     print(f"Starting mitmproxy on port {proxy_port} (log: .vm/mitmdump.log)...")
     proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
-    time.sleep(1)
-    if proc.poll() is not None:
-        log_file.flush()
-        sys.exit(
-            f"mitmdump failed to start (exit code {proc.returncode}). "
-            f"Check {log_path} — port {proxy_port} may already be in use."
-        )
+
+    # Poll for up to 3 seconds to catch fast failures (e.g. port in use).
+    for _ in range(15):
+        time.sleep(0.2)
+        if proc.poll() is not None:
+            log_file.flush()
+            log_tail = log_path.read_text(errors="replace").strip()
+            sys.exit(
+                f"mitmdump failed to start (exit code {proc.returncode}).\n"
+                f"{log_tail}"
+            )
     return proc
 
 
