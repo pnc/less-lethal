@@ -43,6 +43,15 @@ write_files:
       export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
       export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mitmproxy.crt
       export PATH="$HOME/.local/bin:$PATH"
+      export BROWSER=/usr/local/bin/vm-browser
+
+  # Headless browser stub: prints the URL as a clickable OSC 8 terminal
+  # hyperlink so it works even when the URL wraps across lines.
+  - path: /usr/local/bin/vm-browser
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      printf '\n\033]8;;%s\a%s\033]8;;\a\n\n' "$1" "$1"
 
   - path: /etc/systemd/system/mnt-9p.mount
     content: |
@@ -166,18 +175,20 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now mnt-9p.mount
   - systemctl enable --now home-vm-shared.service
-  # Install Claude Code settings and system-wide CLAUDE.md.
+  # Install Claude Code settings and global CLAUDE.md.
   # These were staged to /opt/provision/ by write_files (which runs before
   # user home dirs exist); runcmd runs after user creation so /home/vm/ is safe.
   - mkdir -p /home/vm/.claude
   - cp /opt/provision/claude-settings.json /home/vm/.claude/settings.json
-  - cp /opt/provision/CLAUDE.md /home/vm/CLAUDE.md
-  - chown -R vm:vm /home/vm/.claude /home/vm/CLAUDE.md
+  - cp /opt/provision/CLAUDE.md /home/vm/.claude/CLAUDE.md
+  - chown -R vm:vm /home/vm/.claude
   # Install uv (Python script runner / package manager).
   # su - vm runs the installer as the vm user (login shell loads proxy env
   # from /etc/profile.d/proxy.sh).  --no-modify-path because proxy.sh
   # already adds ~/.local/bin to PATH.  Binary lands in /home/vm/.local/bin/.
   - su - vm -c 'curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path'
+  # Install Claude Code CLI.
+  - su - vm -c 'curl -fsSL https://claude.ai/install.sh | sh'
   # Propagate the host user's git identity into the VM so commits
   # made inside the guest have the correct author.  The placeholders
   # are substituted by vm.py from `git config --global`; if the host
