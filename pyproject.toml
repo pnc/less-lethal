@@ -7,8 +7,5 @@ dependencies = ["mitmproxy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-[tool.uv]
-exclude-newer = "1 week"
-
 [dependency-groups]
 dev = ["pytest", "pytest-sugar"]
