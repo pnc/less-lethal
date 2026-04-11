@@ -19,7 +19,9 @@ import pytest
 
 REPO = Path(__file__).parent.parent
 VM_PY = REPO / "vm.py"
-CONSOLE_LOG = REPO / ".vm" / "console.log"
+STATE_DIR = Path(os.environ["VM_STATE_DIR"]) if "VM_STATE_DIR" in os.environ \
+    else REPO / ".vm"
+CONSOLE_LOG = STATE_DIR / "console.log"
 
 # Generous timeout for TCG emulation (no KVM).  Reduce if KVM is available.
 BOOT_TIMEOUT = 600   # seconds to wait for SSH to become available after start
@@ -75,7 +77,7 @@ def _kill_all_vm_processes() -> None:
                    capture_output=True)
     # QEMU child — may outlive vm.py.  Identified by the repo-specific
     # disk path, which is always in the QEMU command line.
-    disk = str(REPO / ".vm" / "disk.qcow2")
+    disk = str(STATE_DIR / "disk.qcow2")
     subprocess.run(["pkill", "-f", f"qemu.*{disk}"], capture_output=True)
     # mitmdump on the test port only (not a user's default-port proxy).
     subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"],
@@ -87,7 +89,7 @@ def _dump_logs() -> None:
     """Print console log and mitmdump log tails to stderr for diagnostics."""
     for label, path in [
         ("CONSOLE LOG", CONSOLE_LOG),
-        ("MITMDUMP LOG", REPO / ".vm" / "mitmdump.log"),
+        ("MITMDUMP LOG", STATE_DIR / "mitmdump.log"),
     ]:
         print(f"\n{'=' * 60}", file=sys.stderr)
         print(f"{label}: {path}", file=sys.stderr)
@@ -157,8 +159,7 @@ def running_vm():
     outer_proxy = (os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY") or
                    os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY"))
     if outer_proxy:
-        state_dir = REPO / ".vm"
-        state_dir.mkdir(parents=True, exist_ok=True)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         ca_result = subprocess.run(
             ["curl", "-fsS", "--proxy", outer_proxy, "http://mitm.it/cert/pem"],
             capture_output=True, timeout=10,
@@ -168,7 +169,7 @@ def running_vm():
                 f"Could not fetch outer proxy CA cert from mitm.it via {outer_proxy}.\n"
                 f"stderr: {ca_result.stderr.decode(errors='replace')}"
             )
-        (state_dir / "upstream-ca.pem").write_bytes(ca_result.stdout)
+        (STATE_DIR / "upstream-ca.pem").write_bytes(ca_result.stdout)
 
     CONSOLE_LOG.parent.mkdir(parents=True, exist_ok=True)
     console_f = CONSOLE_LOG.open("w")

@@ -24,7 +24,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROXY_PORT: int = 8090
 SSH_HOST_PORT: int = 2222
-STATE_DIR: Path = SCRIPT_DIR / ".vm"       # ephemeral state, nuked on reset
+STATE_DIR: Path = Path(os.environ["VM_STATE_DIR"]) if "VM_STATE_DIR" in os.environ \
+    else SCRIPT_DIR / ".vm"                  # ephemeral state, nuked on reset
 IMAGES_DIR: Path = SCRIPT_DIR / ".images"  # persistent download cache (base image)
 SHARED_DIR: Path = SCRIPT_DIR / "shared"
 CLOUD_INIT_DIR: Path = SCRIPT_DIR / "cloud-init"
