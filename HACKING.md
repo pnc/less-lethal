@@ -36,7 +36,23 @@ The tests boot a real VM under TCG emulation (~90s without KVM, faster with
 `/dev/kvm` available). They use `--ssh-port 2223` and `--proxy-port 8091`
 to avoid colliding with a running default VM.
 
-There is also a fast unit test suite for the filter logic (no VM required):
+### Running alongside a live VM
+
+The test suite uses different ports (8091/2223) from the defaults
+(8090/2222), but shares the same `.vm/` state directory by default —
+running `reset` would destroy your running VM's disk overlay and SSH
+key.  To run tests without disturbing a live session, point the tests
+at an isolated state directory:
+
+```bash
+VM_STATE_DIR=/tmp/agent-vm-test uv run pytest tests/test_e2e.py -v -s
+```
+
+This keeps the test's disk, seed ISO, SSH key, and logs completely
+separate from `.vm/`.  The base image in `.images/` is read-only and
+shared safely.
+
+### Unit tests (fast, no VM required)
 
 ```bash
 uv run pytest tests/test_filter.py -v

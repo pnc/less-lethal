@@ -10,7 +10,15 @@ uv run pytest tests/test_e2e.py -v -s
 
 The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
 
-The full suite including the network isolation test can take 5+ minutes under TCG emulation. Run the tests in the background and use the **Monitor** tool to stream results rather than blocking on a single long-running Bash call.
+The full suite including the network isolation tests can take 5+ minutes under TCG emulation. Launch the test with `Bash` using `run_in_background: true`, then immediately attach a `Monitor` to tail the output file with a progress filter. This keeps the conversation unblocked while streaming results:
+
+```
+# 1. Launch (non-blocking)
+Bash(command="...", run_in_background=true)
+
+# 2. Stream progress
+Monitor(command="tail -f <output_file> | grep --line-buffered -E '(PASSED|FAILED|ERROR|test_)'")
+```
 
 ## Tooling policy
 

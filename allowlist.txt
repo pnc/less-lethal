@@ -27,3 +27,11 @@ POST https://api.anthropic.com/api/*
 GET https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/*
 GET https://downloads.claude.ai/claude-code-releases/*
 GET https://api.anthropic.com/api/hello
+
+# ── uv (Python package manager) ───────────────────────────────────
+# Installer script and binary download.  The install script lives at
+# astral.sh and redirects to a GitHub release asset whose URL varies
+# by version and platform.
+GET https://astral.sh/uv/install.sh
+GET https://github.com/astral-sh/uv/releases/*
+GET https://objects.githubusercontent.com/github-production-release-asset-*

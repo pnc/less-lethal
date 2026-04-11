@@ -321,9 +321,8 @@ def test_network_isolation(running_vm):
     A single unexpected open port is enough for a malicious subprocess to
     exfiltrate data or pivot laterally, so this test scans all 65535 ports
     on the guestfwd IP (10.0.2.100) — the only address the guest can
-    interact with.  slirp's restrict=on silently drops SYNs to non-forwarded
-    ports, so the scan takes a few minutes (no RST = nmap must wait for
-    timeout on each filtered port).
+    interact with.  Non-forwarded ports respond with RST (closed), so the
+    scan completes quickly (~10s).
 
     nmap is installed during provisioning via tests/nmap.yaml passed to
     vm.py start --extra-user-data.
@@ -333,7 +332,7 @@ def test_network_isolation(running_vm):
     # -T5: aggressive timing (~100 parallel probes, 300ms timeout)
     # --max-retries 1: don't re-probe filtered ports excessively
     # --host-timeout 300s: hard cap so the test doesn't hang forever
-    _progress("Full port scan of guestfwd IP (10.0.2.100) — this takes a few minutes")
+    _progress("Full port scan of guestfwd IP (10.0.2.100)…")
     nmap_cmd = (
         "nmap -p- -Pn -T5 --max-retries 1 --host-timeout 300s "
         "--open 10.0.2.100 -oG - 2>&1"
@@ -399,3 +398,251 @@ def test_network_isolation(running_vm):
                 f"Unexpected open port(s) on slirp gateway:\n{line}\n"
                 "restrict=on should block all direct TCP to the gateway."
             )
+
+
+# ---------------------------------------------------------------------------
+# Guest isolation: network egress
+# ---------------------------------------------------------------------------
+
+
+def test_no_icmp_to_external_hosts(running_vm):
+    """ICMP to external IPs must be dropped by slirp restrict=on.
+
+    If ping succeeds, the guest has a network path to the internet
+    that completely bypasses the proxy and allowlist filter.
+    """
+    for ip in ("1.1.1.1", "8.8.8.8"):
+        _progress(f"Pinging {ip} (expect timeout)…")
+        r = _vm_ssh(f"ping -c 1 -W 5 {ip} 2>&1", timeout=15)
+        assert r.returncode != 0, (
+            f"ping to {ip} succeeded — ICMP escapes the sandbox!\n"
+            f"stdout: {r.stdout}"
+        )
+
+
+def test_slirp_gateway_does_not_route(running_vm):
+    """The slirp gateway (10.0.2.2) may respond to ICMP but must not route packets.
+
+    With restrict=on, the gateway IP is internal to the QEMU process and
+    responds to pings — this is expected slirp behavior, not a security
+    issue.  The critical property is that the gateway does NOT forward
+    packets to external destinations, even if the guest explicitly adds
+    a route through it.
+    """
+    # The gateway is on the same virtual subnet — ping is expected to work.
+    _progress("Verifying gateway responds (expected slirp behavior)…")
+    r = _vm_ssh("ping -c 1 -W 5 10.0.2.2 2>&1", timeout=15)
+    _progress(f"Gateway ping rc={r.returncode} (non-zero is also fine)")
+
+    # But it must NOT route traffic to external IPs.
+    _progress("Verifying gateway does not route to external IPs…")
+    r = _vm_ssh(
+        "bash -c '"
+        "sudo ip route replace default via 10.0.2.2 2>/dev/null; "
+        "ping -c 1 -W 5 8.8.8.8 2>&1; "
+        "RC=$?; "
+        "sudo ip route del default via 10.0.2.2 2>/dev/null; "
+        "exit $RC"
+        "'",
+        timeout=20,
+    )
+    assert r.returncode != 0, (
+        f"Ping to 8.8.8.8 succeeded via slirp gateway as default route!\n"
+        f"restrict=on is not preventing the gateway from routing traffic.\n"
+        f"stdout: {r.stdout}"
+    )
+
+
+def test_no_direct_tcp_to_external(running_vm):
+    """Direct TCP to external hosts must be blocked.
+
+    A direct connection (without the HTTP proxy) to a public IP on a
+    well-known port must fail.  This is the most important network
+    isolation check: if it passes, a process in the VM can exfiltrate
+    data to any IP without proxy visibility.
+    """
+    _progress("Direct TCP to 1.1.1.1:80 via nmap (expect filtered)…")
+    r = _vm_ssh(
+        "nmap -Pn -sT -p 80 --max-retries 0 --host-timeout 10s "
+        "1.1.1.1 -oG - 2>&1",
+        timeout=30,
+    )
+    assert "/open/" not in r.stdout, (
+        f"Direct TCP to 1.1.1.1:80 is open — proxy bypass detected!\n"
+        f"nmap output: {r.stdout}"
+    )
+
+
+def test_no_dns_resolution_without_proxy(running_vm):
+    """Direct DNS queries must fail — no resolver is reachable.
+
+    slirp restrict=on prevents the guest from reaching the built-in
+    DNS forwarder (10.0.2.3).  Without a working resolver, the guest
+    cannot map hostnames to IPs for direct connections, and DNS
+    tunneling (a common exfiltration channel) is impossible.
+    """
+    _progress("UDP scan of slirp DNS (10.0.2.3:53, expect closed)…")
+    r = _vm_ssh(
+        "sudo nmap -sU -Pn -p 53 --max-retries 0 --host-timeout 10s "
+        "10.0.2.3 -oG - 2>&1",
+        timeout=30,
+    )
+    assert "53/open/" not in r.stdout, (
+        f"UDP port 53 on slirp DNS (10.0.2.3) is open!\n"
+        f"Guest can reach the DNS forwarder — DNS tunneling is possible.\n"
+        f"nmap output: {r.stdout}"
+    )
+
+    _progress("UDP scan of public DNS (8.8.8.8:53, expect filtered)…")
+    r2 = _vm_ssh(
+        "sudo nmap -sU -Pn -p 53 --max-retries 0 --host-timeout 10s "
+        "8.8.8.8 -oG - 2>&1",
+        timeout=30,
+    )
+    assert "53/open/" not in r2.stdout, (
+        f"UDP port 53 on public DNS (8.8.8.8) is open!\n"
+        f"Guest can reach external DNS servers.\n"
+        f"nmap output: {r2.stdout}"
+    )
+
+
+def test_no_unexpected_udp_on_slirp_gateway(running_vm):
+    """Only known slirp-internal UDP services may be open on the gateway.
+
+    QEMU's slirp stack exposes a small number of built-in UDP services
+    on the gateway (10.0.2.2): TFTP (69) for PXE boot, and DHCP (67/68).
+    These are QEMU-internal and do not provide a path to the host or
+    external network.  DNS (53) must NOT be open — a reachable DNS server
+    would enable DNS tunneling for data exfiltration.
+    """
+    # Known slirp-internal services that are not exfiltration vectors:
+    # - 67/68 (DHCP): needed for guest IP assignment
+    # - 69 (TFTP): QEMU's built-in PXE server, serves only configured files
+    KNOWN_SLIRP_UDP = {67, 68, 69}
+
+    _progress("UDP scan of slirp gateway (10.0.2.2, common ports)…")
+    r = _vm_ssh(
+        "sudo nmap -sU -Pn -p 53,67,68,69,123,161,443,500 --max-retries 0 "
+        "--host-timeout 15s 10.0.2.2 -oG - 2>&1",
+        timeout=30,
+    )
+    if "Ports:" in r.stdout:
+        for part in r.stdout.split("Ports:")[1].split(","):
+            part = part.strip()
+            if "/open/" in part:
+                port = int(part.split("/")[0])
+                assert port in KNOWN_SLIRP_UDP, (
+                    f"Unexpected open UDP port on slirp gateway: {part}\n"
+                    f"Only known slirp services {KNOWN_SLIRP_UDP} should be open.\n"
+                    f"Full output: {r.stdout}"
+                )
+
+
+def test_no_route_via_slirp_gateway(running_vm):
+    """Manually adding a route through the slirp gateway must not enable external access.
+
+    Even if the guest configures 10.0.2.2 as a default gateway, slirp's
+    restrict=on ensures the gateway does not forward packets.  This test
+    verifies that a motivated attacker cannot simply reconfigure routing
+    to escape the sandbox.
+    """
+    _progress("Adding manual route via gateway, then pinging external IP…")
+    r = _vm_ssh(
+        "bash -c '"
+        "sudo ip route add 1.1.1.1/32 via 10.0.2.2 2>/dev/null; "
+        "ping -c 1 -W 5 1.1.1.1 2>&1; "
+        "RC=$?; "
+        "sudo ip route del 1.1.1.1/32 via 10.0.2.2 2>/dev/null; "
+        "exit $RC"
+        "'",
+        timeout=20,
+    )
+    assert r.returncode != 0, (
+        f"Ping to 1.1.1.1 succeeded after adding route via slirp gateway!\n"
+        f"restrict=on is not preventing gateway-based routing.\n"
+        f"stdout: {r.stdout}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Guest isolation: shared directory (9p)
+# ---------------------------------------------------------------------------
+
+
+def test_9p_symlink_escape_blocked(running_vm):
+    """Guest must not be able to create real symlinks on the host via ~/shared.
+
+    With security_model=mapped-xattr, guest-created symlinks are stored as
+    regular files with the target in extended attributes — not as real
+    symlinks on the host.  This blocks the classic 9p symlink escape
+    (CVE-2020-35517).
+
+    An even stronger outcome is that the bindfs UID-mapping layer blocks
+    symlink creation entirely (Permission denied).  Either result is safe;
+    the only failure is a real symlink appearing on the host.
+    """
+    marker = ".test-symlink-escape"
+    _progress("Attempting symlink creation in shared dir…")
+
+    try:
+        r = _vm_ssh(f"ln -sf /etc/shadow ~/shared/{marker} 2>&1", timeout=10)
+
+        if r.returncode != 0:
+            # Symlink creation denied — strongest possible isolation.
+            # bindfs or mapped-xattr prevented the operation entirely.
+            _progress(f"Symlink creation denied (rc={r.returncode}) — safe")
+            return
+
+        # Symlink was created.  Verify it is NOT a real symlink on the host.
+        time.sleep(1)
+        host_path = REPO / "shared" / marker
+        assert not host_path.is_symlink(), (
+            f"Guest-created symlink is a REAL symlink on the host!\n"
+            f"Target: {os.readlink(host_path)}\n"
+            "security_model=mapped-xattr is not in effect — "
+            "the VM can escape to arbitrary host filesystem paths."
+        )
+    finally:
+        _vm_ssh(f"rm -f ~/shared/{marker}", timeout=10)
+
+
+def test_guest_cannot_modify_host_allowlist(running_vm):
+    """The guest must not be able to modify the host's allowlist.txt.
+
+    allowlist.txt lives in the project root, outside the shared directory.
+    A guest that modifies it can grant itself access to arbitrary network
+    endpoints, defeating the entire proxy-based isolation model.  This test
+    tries both a symlink-based escape and direct path traversal, verifying
+    the file is untouched regardless of whether symlinks are blocked by
+    mapped-xattr/bindfs or simply resolve within the guest namespace.
+    """
+    _progress("Attempting to modify host allowlist via shared directory…")
+    marker = ".test-allowlist-escape"
+    allowlist_path = REPO / "allowlist.txt"
+    original_content = allowlist_path.read_text()
+
+    try:
+        # Attempt 1: symlink targeting the allowlist's relative path
+        _vm_ssh(f"ln -sf ../allowlist.txt ~/shared/{marker} 2>/dev/null; true",
+                timeout=10)
+        _vm_ssh(
+            f"bash -c 'echo \"GET https://evil.com/*\" >> ~/shared/{marker} 2>/dev/null; true'",
+            timeout=10,
+        )
+
+        # Attempt 2: direct path traversal (resolves in guest namespace,
+        # but verify the host file is safe regardless)
+        _vm_ssh(
+            "bash -c 'echo \"GET https://evil.com/*\" >> ~/shared/../allowlist.txt 2>/dev/null; true'",
+            timeout=10,
+        )
+
+        # Verify the host's allowlist was not modified
+        assert allowlist_path.read_text() == original_content, (
+            "Host allowlist.txt was MODIFIED through the shared directory!\n"
+            "The guest can escalate its own network permissions."
+        )
+    finally:
+        _vm_ssh(f"rm -f ~/shared/{marker} 2>/dev/null; true", timeout=10)
+        # Safety net: restore original content in case the test failed
+        allowlist_path.write_text(original_content)

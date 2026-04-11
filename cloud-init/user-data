@@ -173,3 +173,14 @@ runcmd:
   - cp /opt/provision/claude-settings.json /home/vm/.claude/settings.json
   - cp /opt/provision/CLAUDE.md /home/vm/CLAUDE.md
   - chown -R vm:vm /home/vm/.claude /home/vm/CLAUDE.md
+  # Install uv (Python script runner / package manager).
+  # su - vm runs the installer as the vm user (login shell loads proxy env
+  # from /etc/profile.d/proxy.sh).  --no-modify-path because proxy.sh
+  # already adds ~/.local/bin to PATH.  Binary lands in /home/vm/.local/bin/.
+  - su - vm -c 'curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path'
+  # Propagate the host user's git identity into the VM so commits
+  # made inside the guest have the correct author.  The placeholders
+  # are substituted by vm.py from `git config --global`; if the host
+  # has no git identity configured, the commands are harmless no-ops.
+  - su - vm -c 'test -n "__GIT_NAME__"  && git config --global user.name  "__GIT_NAME__"  || true'
+  - su - vm -c 'test -n "__GIT_EMAIL__" && git config --global user.email "__GIT_EMAIL__" || true'

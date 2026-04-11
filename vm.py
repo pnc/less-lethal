@@ -349,6 +349,17 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
     ssh_pub = (STATE_DIR / "id_ed25519.pub").read_text().strip()
     override = backend.network_config_override()
 
+    # Read the host's git identity so the guest inherits it.
+    git_name = git_email = ""
+    for key, target in [("user.name", "git_name"), ("user.email", "git_email")]:
+        r = subprocess.run(["git", "config", "--global", key],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            if target == "git_name":
+                git_name = r.stdout.strip()
+            else:
+                git_email = r.stdout.strip()
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         for src in CLOUD_INIT_DIR.iterdir():
@@ -359,6 +370,8 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
                 content = content.replace("__SSH_PUB_KEY__", ssh_pub)
                 content = content.replace("__HOST_IP__", backend.proxy_ip)
                 content = content.replace("__PROXY_PORT__", str(backend.proxy_port))
+                content = content.replace("__GIT_NAME__", git_name)
+                content = content.replace("__GIT_EMAIL__", git_email)
                 if src.name == "user-data" and extra_user_data is not None:
                     merge_directive = (
                         "merge_how:\n"
