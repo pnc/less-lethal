@@ -26,10 +26,10 @@ BOOT_TIMEOUT = 600   # seconds to wait for SSH to become available after start
 SSH_POLL_INTERVAL = 15  # seconds between SSH probe attempts
 CURL_TIMEOUT = 60    # seconds for the curl command itself
 
-# Use a different subnet and proxy port from the defaults so tests don't
-# collide with a user's running VM on the default 192.168.100.0/24 subnet.
-TEST_SUBNET = "192.168.101"
+# Use different ports from the defaults so tests don't collide with a user's
+# running VM.
 TEST_PROXY_PORT = 8091
+TEST_SSH_PORT = 2223
 
 # Module-level start time, set once the VM starts booting.
 _t0: float = 0.0
@@ -60,34 +60,26 @@ def _vm(*args: str, **kwargs) -> subprocess.CompletedProcess:
 
 def _vm_ssh(*cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a command in the VM via ssh, capturing output."""
-    return _vm("ssh", "--subnet", TEST_SUBNET, "--", *cmd, capture_output=True, text=True, timeout=timeout)
-
-
-def _sudo(*args: str, check: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    """Run a command via sudo -n, logging the command to stderr."""
-    print(f"  [sudo] {' '.join(args)}", file=sys.stderr, flush=True)
-    return subprocess.run(["sudo", "-n", *args], check=check, **kwargs)
+    return _vm("ssh", "--ssh-port", str(TEST_SSH_PORT), "--", *cmd,
+               capture_output=True, text=True, timeout=timeout)
 
 
 def _kill_all_vm_processes() -> None:
     """Kill stray processes from a previous test run.
 
     Targets processes by identifiers unique to this repo/test config so
-    a user's running VM on the default subnet is not disrupted.
+    a user's running VM on the default ports is not disrupted.
     """
-    # vm.py parent (has --subnet in its args).
-    subprocess.run(["pkill", "-f", f"vm\\.py.*--subnet.*{TEST_SUBNET}"], capture_output=True)
+    # vm.py parent (has --ssh-port in its args).
+    subprocess.run(["pkill", "-f", f"vm\\.py.*--ssh-port.*{TEST_SSH_PORT}"],
+                   capture_output=True)
     # QEMU child — may outlive vm.py.  Identified by the repo-specific
     # disk path, which is always in the QEMU command line.
     disk = str(REPO / ".vm" / "disk.qcow2")
     subprocess.run(["pkill", "-f", f"qemu.*{disk}"], capture_output=True)
-    # Orphaned socket_vmnet_client wrappers (macOS) whose command line
-    # includes the subnet-specific socket path.
-    subprocess.run(["pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}.*qemu"], capture_output=True)
     # mitmdump on the test port only (not a user's default-port proxy).
-    subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"], capture_output=True)
-    # socket_vmnet daemon for the test subnet (runs as root).
-    _sudo("pkill", "-f", f"socket_vmnet.*{TEST_SUBNET}", capture_output=True)
+    subprocess.run(["pkill", "-f", f"mitmdump.*-p.*{TEST_PROXY_PORT}"],
+                   capture_output=True)
     time.sleep(2)  # allow ports to be released
 
 
@@ -152,58 +144,8 @@ def running_vm():
 
     All tests in the module share a single VM instance.
     """
-    # The test suite never prompts for sudo.  Networking and firewall
-    # rules both need root, so check for cached credentials up front.
-    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
-        print(
-            "\n  sudo credentials not cached.  Run:\n\n"
-            "    sudo -v\n\n"
-            "  then re-run the test suite within the sudo timeout.\n",
-            file=sys.stderr, flush=True,
-        )
-        pytest.skip("sudo credentials not cached")
-    if sys.platform == "darwin":
-        try:
-            brew_prefix = Path(
-                subprocess.check_output(["brew", "--prefix"], text=True).strip()
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pytest.skip("Homebrew not found — cannot locate socket_vmnet")
-        socket_vmnet_bin = brew_prefix / "opt/socket_vmnet/bin/socket_vmnet"
-        if not socket_vmnet_bin.exists():
-            pytest.skip("socket_vmnet not installed — brew install socket_vmnet")
-
     # Kill any stray processes from a previous test run
     _kill_all_vm_processes()
-
-    # Start socket_vmnet for the test subnet (macOS only).
-    vmnet_proc = None
-    if sys.platform == "darwin":
-        socket_path = brew_prefix / f"var/run/socket_vmnet.{TEST_SUBNET}"
-        _sudo("mkdir", "-p", str(socket_path.parent), capture_output=True)
-        vmnet_proc = subprocess.Popen([
-            "sudo", "-n", str(socket_vmnet_bin),
-            "--vmnet-mode=host",
-            f"--vmnet-gateway={TEST_SUBNET}.1",
-            f"--vmnet-dhcp-end={TEST_SUBNET}.254",
-            "--vmnet-mask=255.255.255.0",
-            str(socket_path),
-        ])
-        print(f"  [sudo] {socket_vmnet_bin.name} (pid {vmnet_proc.pid})",
-              file=sys.stderr, flush=True)
-        # Wait for the socket to appear.
-        for _ in range(30):
-            if socket_path.is_socket():
-                break
-            if vmnet_proc.poll() is not None:
-                pytest.fail(
-                    f"socket_vmnet exited immediately (rc={vmnet_proc.returncode}). "
-                    "Is another instance already running for this subnet?"
-                )
-            time.sleep(0.5)
-        else:
-            vmnet_proc.terminate()
-            pytest.fail("socket_vmnet did not create socket within 15s")
 
     # Start from a known clean state
     _vm("reset", check=True)
@@ -239,16 +181,16 @@ def running_vm():
     # Both inherit our file handles, so their output lands in console.log.
     vm_proc = subprocess.Popen(
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
-         "--subnet", TEST_SUBNET,
+         "--ssh-port", str(TEST_SSH_PORT),
          "--proxy-port", str(TEST_PROXY_PORT),
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
         stdout=console_f,
         stderr=console_f,
     )
 
-    # Give vm.py a moment to fail fast (missing socket_vmnet, subnet
-    # mismatch, port conflict, etc.) before entering the SSH probe loop.
-    # Without this, a setup failure just looks like an SSH timeout.
+    # Give vm.py a moment to fail fast (port conflict, etc.) before
+    # entering the SSH probe loop.  Without this, a setup failure just
+    # looks like an SSH timeout.
     time.sleep(2)
     if vm_proc.poll() is not None:
         console_f.flush()
@@ -280,15 +222,6 @@ def running_vm():
         vm_proc.kill()
         vm_proc.wait()
     _kill_all_vm_processes()
-    if vmnet_proc is not None:
-        _sudo("kill", str(vmnet_proc.pid), capture_output=True)
-        vmnet_proc.wait(timeout=5)
-    # On Linux, clean up TAP/bridge devices that may survive an orphaned
-    # QEMU kill (vm.py can't delete them while QEMU holds the TAP open).
-    if sys.platform == "linux":
-        for dev in ("vm-tap0", "vm-br0"):
-            if Path(f"/sys/class/net/{dev}").exists():
-                _sudo("ip", "link", "del", dev, capture_output=True)
     console_f.close()
 
 
@@ -381,35 +314,31 @@ def test_blocked_domain(running_vm):
     )
 
 
-def test_host_exposed_ports(running_vm):
-    """Only the proxy port should be reachable from the VM to the host.
+def test_network_isolation(running_vm):
+    """Only the proxy port should be reachable from the guest.
 
-    This protects the host machine: if other services (SSH, databases, etc.)
-    were reachable, a compromised VM could pivot to attack them.
-
-    The firewall rules are set up by vm.py start (via the backend's
-    setup_firewall method), so this test exercises the real production
-    rules — no manual rule loading needed.
+    A single unexpected open port is enough for a malicious subprocess to
+    exfiltrate data or pivot laterally, so this test scans all 65535 ports
+    on the guestfwd IP (10.0.2.100) — the only address the guest can
+    interact with.  slirp's restrict=on silently drops SYNs to non-forwarded
+    ports, so the scan takes a few minutes (no RST = nmap must wait for
+    timeout on each filtered port).
 
     nmap is installed during provisioning via tests/nmap.yaml passed to
-    vm.py start --extra-user-data, so no apt-get is needed here.
+    vm.py start --extra-user-data.
     """
-    # Derive the host IP and proxy port from the VM's proxy env var.
-    r = _vm_ssh("bash -lc 'echo $http_proxy'", timeout=10)
-    proxy_url = r.stdout.strip()  # e.g. http://192.168.101.1:8090
-    host_ip = proxy_url.split("//")[1].split(":")[0]
-    proxy_port = int(proxy_url.split(":")[-1])
-
-    _progress(f"Starting nmap full port scan against {host_ip}")
-
-    # Full port scan with aggressive timing (-T5). Host-side REJECT rules
-    # give instant responses so the aggressive timing is safe.
-    # --stats-every 15s prints periodic progress to stderr; we merge
-    # remote stderr into stdout so we can stream progress lines while
-    # collecting the grepable (-oG) output for parsing.
-    nmap_cmd = f"nmap -p- -T5 -v --stats-every 15s --open {host_ip} -oG - 2>&1"
+    # --- Full port scan of the guestfwd IP ---
+    # -Pn: skip host discovery (host is virtual, may not respond to pings)
+    # -T5: aggressive timing (~100 parallel probes, 300ms timeout)
+    # --max-retries 1: don't re-probe filtered ports excessively
+    # --host-timeout 300s: hard cap so the test doesn't hang forever
+    _progress("Full port scan of guestfwd IP (10.0.2.100) — this takes a few minutes")
+    nmap_cmd = (
+        "nmap -p- -Pn -T5 --max-retries 1 --host-timeout 300s "
+        "--open 10.0.2.100 -oG - 2>&1"
+    )
     proc = subprocess.Popen(
-        [sys.executable, str(VM_PY), "ssh", "--subnet", TEST_SUBNET, "--",
+        [sys.executable, str(VM_PY), "ssh", "--ssh-port", str(TEST_SSH_PORT), "--",
          f"bash -lc '{nmap_cmd}'"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
@@ -419,9 +348,6 @@ def test_host_exposed_ports(running_vm):
     for line in proc.stdout:
         stdout_lines.append(line)
         stripped = line.strip()
-        if not stripped:
-            continue
-        # Print lines that indicate scan progress or results.
         if any(kw in stripped for kw in [
             "Stats:", "About ", "Completed", "scan report",
             "/open/", "Nmap done",
@@ -448,10 +374,27 @@ def test_host_exposed_ports(running_vm):
                 if "/open/" in part:
                     open_ports.add(int(part.split("/")[0]))
 
-    _progress(f"Open ports: {sorted(open_ports) if open_ports else 'none'}")
+    _progress(f"Open ports on guestfwd IP: {sorted(open_ports) if open_ports else 'none'}")
 
-    unexpected = open_ports - {proxy_port}
+    unexpected = open_ports - {TEST_PROXY_PORT}
     assert not unexpected, (
-        f"Unexpected ports open on host {host_ip}: {sorted(unexpected)}\n"
-        f"Only the proxy port ({proxy_port}) should be accessible from the VM."
+        f"Unexpected ports open on guestfwd IP 10.0.2.100: {sorted(unexpected)}\n"
+        f"Only the proxy port ({TEST_PROXY_PORT}) should be accessible."
     )
+
+    # --- Spot-check the slirp gateway ---
+    # With restrict=on, the gateway (10.0.2.2) should be completely
+    # unreachable.  A targeted scan is sufficient here — if restrict=on
+    # is broken, all ports would be reachable, not just specific ones.
+    _progress("Scanning slirp gateway (10.0.2.2) to verify restrict=on")
+    r = _vm_ssh(
+        "bash -lc 'nmap -Pn -p 22,80,443,8080,8090,8091 -T5 --max-retries 1 "
+        "--host-timeout 30s 10.0.2.2 -oG -'",
+        timeout=60,
+    )
+    for line in r.stdout.splitlines():
+        if "Ports:" in line:
+            assert "/open/" not in line, (
+                f"Unexpected open port(s) on slirp gateway:\n{line}\n"
+                "restrict=on should block all direct TCP to the gateway."
+            )

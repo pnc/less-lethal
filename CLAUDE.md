@@ -10,7 +10,7 @@ uv run pytest tests/test_e2e.py -v -s
 
 The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
 
-The full suite including the nmap port-isolation test can take 10+ minutes under TCG emulation. Run the tests in the background and use the **Monitor** tool to stream results rather than blocking on a single long-running Bash call.
+The full suite including the network isolation test can take 5+ minutes under TCG emulation. Run the tests in the background and use the **Monitor** tool to stream results rather than blocking on a single long-running Bash call.
 
 ## Tooling policy
 
@@ -18,23 +18,23 @@ Use **uv** for all Python tasks (running scripts, managing dependencies, virtual
 
 ## What this project is
 
-A sandboxed Debian VM on macOS with no direct internet access. All network traffic is forced through a host-side mitmproxy instance, which intercepts TLS for full visibility. The VM is provisioned declaratively via cloud-init and launched with a single shell script.
+A sandboxed Debian VM on macOS and Linux with no direct internet access. All network traffic is forced through a host-side mitmproxy instance, which intercepts TLS for full visibility. The VM is provisioned declaratively via cloud-init and launched with a single command — no sudo required.
 
 ## Architecture decisions and why
 
-**QEMU + socket_vmnet** was chosen after eliminating several alternatives:
+**QEMU slirp with `restrict=on` + `guestfwd`** provides network isolation without any host-side network devices or firewall rules.  Previous attempts that were eliminated:
 
 - **Vagrant** is effectively unmaintained.
-- **Lima** was the first replacement attempt. It's a nice Vagrant-like tool with YAML configs, but it hardcodes QEMU's `-netdev user` (slirp) arguments and has no support for `restrict=on`, `guestfwd`, or `vmnet-host`. Network isolation is impossible without `socket_vmnet`, and Lima's `socket_vmnet` integration requires sudoers.
-- **QEMU's `restrict=on` + `guestfwd`** was the next attempt — isolate with slirp's restrict flag, then use `guestfwd` to pipe proxy traffic via `nc`. This was abandoned because `guestfwd` with `cmd:` is unreliable (spawns a new process per connection, buggy interaction with `restrict=on`).
-- **QEMU's built-in `vmnet-host` backend** (`-netdev vmnet-host`) works perfectly but requires the `com.apple.vm.networking` entitlement. Ad-hoc codesigning doesn't work — the kernel rejects it (`ASP: Security policy would not allow process`). This is a restricted entitlement that requires Apple Developer ID signing. UTM gets away with it because it ships as a signed .app bundle.
-- **socket_vmnet** is the working solution. It's a small privileged daemon that holds the vmnet entitlement and passes file descriptors to unprivileged QEMU over a Unix socket. It requires one `sudo` invocation to start the daemon, which we isolated into `start-vmnet.sh` for auditability.
+- **Lima** hardcodes QEMU's `-netdev user` arguments and has no support for `restrict=on` or `guestfwd`. Network isolation is impossible without external tools.
+- **QEMU's `guestfwd` with `cmd:` piping through `nc`** was initially abandoned as unreliable, but revisiting it with QEMU 10.x showed `cmd:nc` works correctly with `restrict=on`. Each guest TCP connection to the guestfwd IP spawns a fresh `nc` that connects to the host-side proxy.
+- **socket_vmnet** (macOS) was the previous working solution. It worked well but required sudo to start a privileged daemon, plus pf firewall rules for port isolation — adding complexity and platform-specific code. slirp replaces all of this with zero-privilege operation.
+- **TAP/bridge** (Linux) was the previous Linux networking solution. Like socket_vmnet, it required sudo for bridge creation and iptables rules. Replaced by slirp.
 
 **Debian "generic" image, not "genericcloud"**: The genericcloud kernel strips out hardware drivers including 9p filesystem modules. The generic image uses the standard Debian kernel which includes them. This matters for the shared directory.
 
-**Static IP, not DHCP**: vmnet's built-in DHCP server works but takes ~34 seconds to respond, which causes cloud-init's network stage to time out. A static IP assignment via cloud-init's `network-config` is instant and deterministic. The network-config must match the interface by MAC address (`52:54:00:12:34:56`, QEMU's default), not by device name — the device name isn't known at cloud-init network config time.
+**DHCP via slirp**: QEMU's built-in slirp stack provides instant DHCP responses, so cloud-init's network stage completes quickly. With `restrict=on`, the DHCP response omits gateway and DNS — the guest can only reach endpoints explicitly configured via `hostfwd` (SSH) and `guestfwd` (proxy).
 
-**bindfs for UID mapping**: The 9p shared directory shows files owned by the host's macOS UID (e.g. 501) inside the guest, where the `vm` user is UID 1000. A systemd service mounts the raw 9p at `/mnt/9p`, then uses `bindfs` to create a UID-mapped view at `/home/vm/shared`. The service reads the actual UID/GID from the 9p mount at runtime with `stat`, so no build-time templating is needed.
+**bindfs for UID mapping**: The 9p shared directory shows files owned by the host UID inside the guest. A systemd service mounts the raw 9p at `/mnt/9p`, then uses `bindfs --force-user=vm --force-group=vm` to present all files as owned by the `vm` user.
 
 **SSH key, not password**: `vm.py` generates a dedicated ed25519 keypair in `.vm/` on first run and injects the public key into cloud-init. Password auth is disabled. The key is ephemeral (nuked on reset along with the disk), which is fine — a new key and new seed.iso are generated together on the next start.
 
@@ -57,7 +57,7 @@ shared/            Shared with guest at ~/shared (only .gitkeep is tracked)
 cloud-init/
   user-data        Cloud-init config (proxy, CA cert, packages, systemd units)
   meta-data        Instance identity
-  network-config   Static IP assignment (netplan v2 format)
+  network-config   DHCP via slirp (netplan v2 format)
 .images/           Persistent download cache (gitignored)
   base.qcow2       Downloaded Debian cloud image (survives reset)
 .vm/               Ephemeral VM state (gitignored, nuked on reset)
@@ -70,9 +70,8 @@ cloud-init/
   console.log      QEMU serial console output
 ```
 
-`vm.py start` handles the full startup sequence: it auto-launches socket_vmnet
-(macOS) if the socket isn't present, starts mitmdump in the background (logging
-to `.vm/mitmdump.log`), boots QEMU, waits for SSH, then drops you into an SSH
-session. On session exit, all processes (QEMU, mitmproxy, socket_vmnet) are
-stopped. When stdout is not a TTY (e.g. test suite), QEMU runs in the
+`vm.py start` starts mitmdump in the background (logging to `.vm/mitmdump.log`),
+boots QEMU with slirp networking, waits for SSH, then drops you into an SSH
+session. On session exit, both QEMU and mitmproxy are stopped. No sudo is
+required. When stdout is not a TTY (e.g. test suite), QEMU runs in the
 foreground with the serial console on stdout instead.

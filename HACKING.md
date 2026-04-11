@@ -3,11 +3,8 @@
 ## macOS test prerequisites
 
 ```bash
-brew install qemu socket_vmnet
+brew install qemu mitmproxy
 ```
-
-The test suite starts and stops socket_vmnet automatically. No separate
-terminal is needed.
 
 ## Linux test prerequisites
 
@@ -20,15 +17,14 @@ sudo apt install qemu-system-arm qemu-efi-aarch64
 # ISO tooling for building cloud-init seed images
 sudo apt install genisoimage    # provides mkisofs
 
-# Host-side firewall for VM network isolation
-sudo apt install iptables
+# netcat for slirp guestfwd proxy forwarding
+sudo apt install netcat-openbsd
 
 # uv (Python script runner / package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-The test suite needs **passwordless sudo** for creating the TAP/bridge network
-devices and iptables rules that enforce host-side isolation.
+No sudo is required to run the VM or the test suite.
 
 ## Running the tests
 
@@ -37,19 +33,8 @@ uv run pytest tests/test_e2e.py -v -s
 ```
 
 The tests boot a real VM under TCG emulation (~90s without KVM, faster with
-`/dev/kvm` available). They use `--subnet 192.168.101` and `--proxy-port 8091`
+`/dev/kvm` available). They use `--ssh-port 2223` and `--proxy-port 8091`
 to avoid colliding with a running default VM.
-
-The test suite never prompts for sudo — it uses `sudo -n` (non-interactive)
-throughout and skips all tests if credentials aren't cached. Cache them first:
-
-```bash
-sudo -v                                  # cache credentials
-uv run pytest tests/test_e2e.py -v -s    # run within the sudo timeout
-```
-
-All privileged commands are logged to stderr with a `[sudo]` prefix so you
-can see exactly what runs as root.
 
 There is also a fast unit test suite for the filter logic (no VM required):
 

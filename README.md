@@ -1,6 +1,6 @@
 # Agent VM
 
-A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (socket\_vmnet + HVF) and Linux (TAP/bridge + TCG/KVM).
+A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (HVF) and Linux (KVM/TCG). No sudo required.
 
 ## Why: the "lethal trifecta"
 
@@ -14,9 +14,9 @@ This VM provides (1) and (2) but constrains (3): all traffic passes through a hu
 
 ## Quick start
 
-**macOS prerequisites:** `brew install qemu socket_vmnet mitmproxy`
+**macOS prerequisites:** `brew install qemu mitmproxy`
 
-**Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage iptables` (or x86 equivalents). Requires sudo for TAP/bridge setup.
+**Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage netcat-openbsd mitmproxy` (or x86 equivalents).
 
 ```bash
 ./vm.py start          # start everything + drop into SSH session
@@ -24,7 +24,7 @@ This VM provides (1) and (2) but constrains (3): all traffic passes through a hu
 ./vm.py reset          # destroy ephemeral state, keep base image
 ```
 
-`vm.py start` launches socket\_vmnet (macOS), mitmproxy, and QEMU, waits for the VM to boot, then drops you into an SSH session. Exiting the session stops everything. Serial console output is logged to `.vm/console.log`.
+`vm.py start` launches mitmproxy and QEMU, waits for the VM to boot, then drops you into an SSH session. Exiting the session stops everything. No sudo is required — network isolation uses QEMU's built-in slirp stack with `restrict=on`. Serial console output is logged to `.vm/console.log`.
 
 Files in `shared/` on the host appear at `~/shared` inside the guest.
 
