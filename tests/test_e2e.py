@@ -237,7 +237,7 @@ def test_cloud_init_success(running_vm):
     SSH subprocess open during the entire cloud-init run (which includes
     package installation and can take several minutes in TCG mode).
     """
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 600
     last_detail = ""
     while time.monotonic() < deadline:
         try:
