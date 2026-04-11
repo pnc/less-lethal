@@ -511,6 +511,31 @@ def _wait_for_ssh(ssh_host_port: int, qemu_proc: subprocess.Popen,
     )
 
 
+def _wait_for_cloud_init(ssh_host_port: int, qemu_proc: subprocess.Popen,
+                         timeout: int = 600) -> None:
+    """Wait for cloud-init to finish provisioning the VM.
+
+    SSH is already up at this point, but packages and runcmd may still be
+    running.  We run ``cloud-init status --wait`` over SSH which blocks
+    until cloud-init reaches 'done' (or 'error').
+    """
+    print("  Waiting for cloud-init to finish provisioning...", end="", flush=True)
+    try:
+        r = subprocess.run(
+            [*_ssh_args(ssh_host_port), "cloud-init", "status", "--wait"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode != 0:
+            print(f"\n  Warning: cloud-init exited with status {r.returncode}.")
+            stderr = r.stderr.strip()
+            if stderr:
+                print(f"  {stderr}")
+        else:
+            print(" done.")
+    except subprocess.TimeoutExpired:
+        print(f"\n  Warning: cloud-init did not finish within {timeout}s.")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -550,6 +575,7 @@ def cmd_start(args: argparse.Namespace) -> None:
 
         try:
             _wait_for_ssh(backend.ssh_host_port, qemu_proc)
+            _wait_for_cloud_init(backend.ssh_host_port, qemu_proc)
             print(f"  Log out of the SSH session to stop the VM.\n")
             subprocess.run([*_ssh_args(backend.ssh_host_port)])
         except KeyboardInterrupt:

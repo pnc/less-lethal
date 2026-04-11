@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+@import HACKING.md
+
 ## Development workflow
 
 Always run the test suite before committing:
