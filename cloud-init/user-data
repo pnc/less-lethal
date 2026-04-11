@@ -188,7 +188,7 @@ runcmd:
   # already adds ~/.local/bin to PATH.  Binary lands in /home/vm/.local/bin/.
   - su - vm -c 'curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path'
   # Install Claude Code CLI.
-  - su - vm -c 'curl -fsSL https://claude.ai/install.sh | sh'
+  - su - vm -c 'curl -fsSL https://claude.ai/install.sh | bash'
   # Propagate the host user's git identity into the VM so commits
   # made inside the guest have the correct author.  The placeholders
   # are substituted by vm.py from `git config --global`; if the host

@@ -37,4 +37,4 @@ GET https://api.anthropic.com/api/hello
 # by version and platform.
 GET https://astral.sh/uv/install.sh
 GET https://github.com/astral-sh/uv/releases/*
-GET https://objects.githubusercontent.com/github-production-release-asset-*
+GET https://release-assets.githubusercontent.com/github-production-release-asset-*
