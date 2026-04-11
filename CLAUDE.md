@@ -12,7 +12,9 @@ uv run pytest tests/test_e2e.py -v -s
 
 The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
 
-The full suite including the network isolation tests can take 5+ minutes under TCG emulation. Launch the test with `Bash` using `run_in_background: true`, then immediately attach a `Monitor` to tail the output file with a progress filter. This keeps the conversation unblocked while streaming results:
+The full suite including the network isolation tests can take 5+ minutes under TCG emulation. TCG is slower than KVM but not *that* slow — if cloud-init status is unchanged for more than a minute, check the console log and process list rather than assuming it's just slow. A dead QEMU process or OOM kill is more likely than TCG being the bottleneck.
+
+Launch the test with `Bash` using `run_in_background: true`, then immediately attach a `Monitor` to tail the output file with a progress filter. This keeps the conversation unblocked while streaming results:
 
 ```
 # 1. Launch (non-blocking)

@@ -1,6 +1,6 @@
 # Agent VM
 
-A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (HVF) and Linux (KVM/TCG). No sudo required.
+A sandboxed Debian VM with no direct internet access. All traffic is forced through a host-side [mitmproxy](https://mitmproxy.org/) that enforces an allowlist, giving full visibility and control over what the guest can reach. Runs on macOS (Hypervisor.framework) and Linux (KVM or software emulation). No sudo required.
 
 ## Why: the "lethal trifecta"
 
@@ -12,21 +12,39 @@ Simon Willison describes a ["lethal trifecta"](https://simonwillison.net/2025/Ju
 
 This VM provides (1) and (2) but constrains (3): all traffic passes through a human-curated allowlist, so the operator approves every new endpoint.
 
+### Why a VM instead of Docker?
+
+Docker containers share the host kernel and were not designed as a security boundary — container escapes are a [well-known attack class](https://web.archive.org/web/2025/https://www.docker.com/blog/docker-security-best-practices/) (Docker has since redirected this article to one titled "Docker Sandboxes: Run Agents in YOLO Mode, Safely"). A real VM provides hardware-level isolation via QEMU. It also means the agent can work on projects that themselves use Docker, without the complexity of Docker-in-Docker.
+
 ## Quick start
 
-**macOS prerequisites:** `brew install qemu mitmproxy`
-
-**Linux prerequisites:** `apt install qemu-system-arm qemu-efi-aarch64 genisoimage netcat-openbsd mitmproxy` (or x86 equivalents).
+Install the prerequisites:
 
 ```bash
-./vm.py start          # start everything + drop into SSH session
+# macOS
+brew install qemu mitmproxy uv
+
+# Linux (ARM64 — use qemu-system-x86 on amd64 hosts)
+sudo apt install qemu-system-arm qemu-efi-aarch64 genisoimage netcat-openbsd mitmproxy
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then launch the VM:
+
+```bash
+./vm.py                # boots the VM and drops you into an SSH session
+```
+
+The first run downloads a Debian cloud image (~700 MB) and provisions the VM with cloud-init. Subsequent starts reuse the cached image and take about a minute. Once you're in, run `claude` to start a Claude Code session.
+
+Exit the SSH session to stop the VM. Other useful commands:
+
+```bash
 ./vm.py ssh            # open another SSH session (from a second terminal)
 ./vm.py reset          # destroy ephemeral state, keep base image
 ```
 
-`vm.py start` launches mitmproxy and QEMU, waits for the VM to boot, then drops you into an SSH session. Exiting the session stops everything. No sudo is required — network isolation uses QEMU's built-in slirp stack with `restrict=on`. Serial console output is logged to `.vm/console.log`.
-
-Files in `shared/` on the host appear at `~/shared` inside the guest.
+No sudo is required — network isolation uses QEMU's built-in slirp stack with `restrict=on`. Serial console output is logged to `.vm/console.log`. Files in `shared/` on the host appear at `~/shared` inside the guest.
 
 ## Network filter
 

@@ -636,8 +636,8 @@ def main() -> None:
 
     start_p = sub.add_parser("start", help="Start mitmproxy and QEMU")
     start_p.add_argument(
-        "--memory", default="2G", metavar="SIZE",
-        help="RAM to give the VM, in QEMU notation (default: 2G)",
+        "--memory", default="4G", metavar="SIZE",
+        help="RAM to give the VM, in QEMU notation (default: 4G)",
     )
     start_p.add_argument(
         "--extra-user-data", metavar="FILE",
@@ -665,6 +665,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if not args.command:
+        args.command = "start"
+        # Re-parse so start's defaults are populated.
+        args = start_p.parse_args([], namespace=args)
 
     if args.command == "start":
         cmd_start(args)

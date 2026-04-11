@@ -1,14 +1,20 @@
 # Developing agent-vm
 
-## macOS test prerequisites
+## Test prerequisites
+
+These are for running the e2e test suite, which boots a real QEMU VM.
+They are **not** needed to use the VM — only to develop and test the
+VM project itself. (This distinction matters when hacking on agent-vm
+from inside the VM: you need to install these prerequisites in the
+guest to run the tests there.)
+
+**macOS:**
 
 ```bash
 brew install qemu mitmproxy
 ```
 
-## Linux test prerequisites
-
-Install the following packages before running the test suite:
+**Linux:**
 
 ```bash
 # QEMU emulator and firmware (ARM64 — use qemu-system-x86 on amd64 hosts)
@@ -35,10 +41,6 @@ uv run pytest tests/test_e2e.py -v -s
 The tests boot a real VM under TCG emulation (~90s without KVM, faster with
 `/dev/kvm` available). They use `--ssh-port 2223` and `--proxy-port 8091`
 to avoid colliding with a running default VM.
-
-Nested execution works: the test suite runs fine from inside the VM
-itself (QEMU under TCG within QEMU). This means Claude Code sessions
-inside the VM can and should run the e2e tests before committing.
 
 ### Running alongside a live VM
 
