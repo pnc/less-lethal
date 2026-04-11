@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly Monday 6am UTC — catches upstream Debian image drift
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest tests/test_filter.py -v
+
+  e2e-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VM_STATE_DIR: ${{ runner.temp }}/vm-state
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install QEMU and dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 genisoimage netcat-openbsd
+
+      - name: Install mitmproxy
+        run: uv tool install mitmproxy
+
+      - name: Run e2e tests
+        run: uv run pytest tests/test_e2e.py -v -s
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-linux-logs
+          path: |
+            ${{ runner.temp }}/vm-state/console.log
+            ${{ runner.temp }}/vm-state/mitmdump.log
+
+  e2e-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      VM_STATE_DIR: ${{ runner.temp }}/vm-state
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install QEMU and mitmproxy
+        run: brew install qemu mitmproxy
+
+      - name: Run e2e tests
+        run: uv run pytest tests/test_e2e.py -v -s
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-macos-logs
+          path: |
+            ${{ runner.temp }}/vm-state/console.log
+            ${{ runner.temp }}/vm-state/mitmdump.log
