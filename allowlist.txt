@@ -56,9 +56,10 @@ GET https://api.anthropic.com/api/hello
 
 # ── uv (Python package manager) ───────────────────────────────────
 # Installer script and binary download.  The install script lives at
-# astral.sh and redirects to a GitHub release asset whose URL varies
-# by version and platform.
+# astral.sh; binary downloads come from releases.astral.sh (or GitHub
+# release assets as a fallback).  URLs vary by version and platform.
 GET https://astral.sh/uv/install.sh
+GET https://releases.astral.sh/github/uv/releases/*
 GET https://github.com/astral-sh/uv/releases/*
 GET https://release-assets.githubusercontent.com/github-production-release-asset/*
 

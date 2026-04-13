@@ -5,6 +5,7 @@ users:
     lock_passwd: true
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
+    groups: docker, kvm
     ssh_authorized_keys:
       - __SSH_PUB_KEY__
 
@@ -194,8 +195,6 @@ runcmd:
   - cp /opt/provision/claude-settings.json /home/vm/.claude/settings.json
   - cp /opt/provision/CLAUDE.md /home/vm/.claude/CLAUDE.md
   - chown -R vm:vm /home/vm/.claude
-  # Add vm user to the docker group (created by the docker.io package).
-  - usermod -aG docker vm
   # Install uv (Python script runner / package manager).
   # su - vm runs the installer as the vm user (login shell loads proxy env
   # from /etc/profile.d/proxy.sh).  --no-modify-path because proxy.sh
