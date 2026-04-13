@@ -438,7 +438,13 @@ def build_qemu_args(backend: Backend, memory: str) -> list[str]:
 def start_mitmproxy(proxy_port: int = PROXY_PORT) -> subprocess.Popen:
     """Start mitmdump in the background, logging to .vm/mitmdump.log."""
     log_path = STATE_DIR / "mitmdump.log"
-    cmd = ["mitmdump", "--listen-host", "127.0.0.1", "-p", str(proxy_port)]
+    cmd = [
+        "mitmdump", "--listen-host", "127.0.0.1", "-p", str(proxy_port),
+        # Stream large responses instead of buffering them in memory.
+        # Without this, a 200+ MB download (e.g. Claude Code binary) can
+        # OOM the process — especially in a nested VM with limited RAM.
+        "--set", "stream_large_bodies=1m",
+    ]
 
     # If this host itself uses an upstream proxy (e.g. we're inside a sandboxed
     # VM), forward mitmproxy's own outbound traffic through it.
