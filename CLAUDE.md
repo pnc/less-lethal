@@ -4,6 +4,9 @@
 
 ## Development workflow
 
+Before running the e2e tests, ensure the test prerequisites from
+HACKING.md are installed.
+
 Always run the test suite before committing:
 
 ```bash

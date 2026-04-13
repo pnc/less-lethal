@@ -49,3 +49,16 @@ GET https://auth.docker.io/token*
 # Blob storage — the registry redirects layer downloads to this
 # Cloudflare R2 bucket.  Paths contain per-blob sha256 digests.
 GET https://docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com/registry-v2/*
+
+# ── Debian cloud images (nested VM testing only) ──────────────────
+# Only needed when running the e2e test suite inside a VM (i.e. the
+# tests boot a nested QEMU guest).  See HACKING.md for details.
+# cloud.debian.org (*.debian.org, already trusted) serves checksums
+# directly but 302-redirects large files (qcow2) to offloader hosts
+# at Umea University.  The offloader is deterministic per-URL (hash),
+# so different images may hit different hosts.  Paths vary by arch,
+# release, and date.
+# GET https://gemmei.ftp.acc.umu.se/images/cloud/*
+# GET https://saimei.ftp.acc.umu.se/images/cloud/*
+# GET https://laotzu.ftp.acc.umu.se/images/cloud/*
+# GET https://chuangtzu.ftp.acc.umu.se/images/cloud/*
