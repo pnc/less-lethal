@@ -237,7 +237,7 @@ def test_cloud_init_success(running_vm):
     SSH subprocess open during the entire cloud-init run (which includes
     package installation and can take several minutes in TCG mode).
     """
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 600
     last_detail = ""
     while time.monotonic() < deadline:
         try:
@@ -262,7 +262,7 @@ def test_cloud_init_success(running_vm):
         if "status: error" in r.stdout:
             pytest.fail(f"cloud-init finished with errors:\n{r.stdout}")
         time.sleep(10)
-    pytest.fail("cloud-init did not complete within 300s")
+    pytest.fail("cloud-init did not complete within 600s")
 
 
 def test_curl_http_pypi_org(running_vm):
@@ -316,7 +316,7 @@ def test_docker_hello_world(running_vm):
     """
     _progress("Running docker hello-world (includes image pull)…")
     result = _vm_ssh(
-        "sudo docker run hello-world 2>&1",
+        "docker run hello-world 2>&1",
         timeout=180,
     )
     if result.returncode != 0:
