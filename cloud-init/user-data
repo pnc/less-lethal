@@ -53,6 +53,16 @@ write_files:
       #!/bin/sh
       printf '\n\033]8;;%s\a%s\033]8;;\a\n\n' "$1" "$1"
 
+  # Docker daemon proxy configuration.  write_files runs before the
+  # packages stage, so this override is already in place when docker.io
+  # is installed and systemd first loads the docker.service unit.
+  - path: /etc/systemd/system/docker.service.d/proxy.conf
+    content: |
+      [Service]
+      Environment="HTTP_PROXY=http://__HOST_IP__:__PROXY_PORT__"
+      Environment="HTTPS_PROXY=http://__HOST_IP__:__PROXY_PORT__"
+      Environment="NO_PROXY=localhost,127.0.0.1,__HOST_IP__"
+
   - path: /etc/systemd/system/mnt-9p.mount
     content: |
       [Unit]
@@ -169,6 +179,7 @@ packages:
   - curl
   - bindfs
   - git
+  - docker.io
 
 runcmd:
   - mkdir -p /mnt/9p /home/vm/shared
@@ -182,6 +193,8 @@ runcmd:
   - cp /opt/provision/claude-settings.json /home/vm/.claude/settings.json
   - cp /opt/provision/CLAUDE.md /home/vm/.claude/CLAUDE.md
   - chown -R vm:vm /home/vm/.claude
+  # Add vm user to the docker group (created by the docker.io package).
+  - usermod -aG docker vm
   # Install uv (Python script runner / package manager).
   # su - vm runs the installer as the vm user (login shell loads proxy env
   # from /etc/profile.d/proxy.sh).  --no-modify-path because proxy.sh

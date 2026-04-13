@@ -38,3 +38,14 @@ GET https://api.anthropic.com/api/hello
 GET https://astral.sh/uv/install.sh
 GET https://github.com/astral-sh/uv/releases/*
 GET https://release-assets.githubusercontent.com/github-production-release-asset/*
+
+# ── Docker Hub ────────────────────────────────────────────────────
+# Registry API — paths vary by image name, tag, and sha256 digest
+# (e.g. /v2/library/hello-world/manifests/latest).  Scoped to /v2/.
+GET  https://registry-1.docker.io/v2/*
+# Auth tokens — the registry returns 401 with a token URL whose
+# query parameters vary per request (scope, service, etc.).
+GET https://auth.docker.io/token*
+# Blob storage — the registry redirects layer downloads to this
+# Cloudflare R2 bucket.  Paths contain per-blob sha256 digests.
+GET https://docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com/registry-v2/*
