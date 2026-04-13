@@ -13,6 +13,30 @@
 #   POST https://api.github.com/repos/myorg/myrepo/issues
 #   GET  https://api.openweathermap.org/data/2.5/weather
 
+# ── mitmproxy CA certificate ───────────────────────────────────────
+# Magic domain served by mitmproxy over plain HTTP.  The guest
+# fetches the CA cert at boot before any HTTPS traffic.
+GET http://mitm.it/cert/pem
+
+# ── OS package repos (Debian) ─────────────────────────────────────
+# The VM runs Debian.  deb.debian.org is the primary apt CDN (Fastly).
+# cloud.debian.org hosts cloud image checksums (large files redirect
+# to offloaders — see the "Debian cloud images" section below).
+GET https://deb.debian.org/*
+GET https://security.debian.org/*
+GET https://cloud.debian.org/*
+
+# ── OS package repos (Ubuntu — uncomment if using an Ubuntu image) ─
+# GET https://archive.ubuntu.com/*
+# GET https://security.ubuntu.com/*
+# GET https://ports.ubuntu.com/*
+# If your Ubuntu mirror is a geo subdomain (e.g. us.archive.ubuntu.com),
+# add it here — domain wildcards are not supported.
+
+# ── Python package repos ──────────────────────────────────────────
+GET https://pypi.org/*
+GET https://files.pythonhosted.org/*
+
 # ── Claude Code ────────────────────────────────────────────────────
 # Anthropic API — scoped to the v1 API prefix so only API calls are
 # permitted, not arbitrary requests to the domain.
@@ -24,9 +48,8 @@ GET  https://api.anthropic.com/v1/*
 GET https://api.anthropic.com/api/*
 POST https://api.anthropic.com/api/*
 
-# Claude Code binary downloads from Google Cloud Storage.  GET-only
-# to prevent POST-based exfiltration.  Scoped to the known Anthropic
-# release bucket; paths vary by version and platform.
+# Claude Code binary downloads from Google Cloud Storage. Scoped
+# to the known Anthropic release bucket; paths vary by version and platform.
 GET https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/*
 GET https://downloads.claude.ai/claude-code-releases/*
 GET https://api.anthropic.com/api/hello

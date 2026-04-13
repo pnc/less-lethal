@@ -107,15 +107,12 @@ class TestParseAllowlist:
 # ---------------------------------------------------------------------------
 
 class TestIsAllowed:
-    def test_trusted_domain_allows_any_method(self):
-        assert fm.is_allowed([], "GET", "pypi.org", "https://pypi.org/simple/")
-        assert fm.is_allowed([], "POST", "pypi.org", "https://pypi.org/")
+    def test_empty_rules_block_known_domains(self):
+        """With no rules, even well-known domains are blocked."""
+        assert not fm.is_allowed([], "GET", "pypi.org", "https://pypi.org/simple/")
+        assert not fm.is_allowed([], "GET", "deb.debian.org", "http://deb.debian.org/")
 
-    def test_trusted_domain_regex(self):
-        assert fm.is_allowed([], "GET", "ftp.debian.org", "http://ftp.debian.org/")
-        assert fm.is_allowed([], "GET", "security.debian.org", "http://security.debian.org/")
-
-    def test_non_trusted_domain_blocked(self):
+    def test_non_matching_domain_blocked(self):
         assert not fm.is_allowed([], "GET", "example.com", "http://example.com/")
 
     def test_method_url_rule_matching(self):

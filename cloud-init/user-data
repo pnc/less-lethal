@@ -154,11 +154,12 @@ write_files:
       >     POST https://api.anthropic.com/v1/*
       >     GET  https://api.anthropic.com/v1/*
 
-      ## Trusted infrastructure (always allowed)
+      ## Default allowlist
 
-      Package repos (debian.org, ubuntu.com, pypi.org) and the
-      mitmproxy CA endpoint (mitm.it) are trusted at the proxy level
-      and need no allowlist rules.
+      Package repos (deb.debian.org, pypi.org), the mitmproxy CA
+      endpoint (mitm.it), and other infrastructure are included in the
+      default allowlist.txt.  All network access is governed by that
+      single file — there are no hidden trusted domains.
 
   - path: /etc/systemd/system/home-vm-shared.service
     content: |

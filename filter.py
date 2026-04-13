@@ -1,19 +1,13 @@
 """
 mitmproxy allowlist filter — controls what the VM can access.
 
-Traffic is filtered at two levels:
+All network access is governed by allowlist.txt.  Each non-blank,
+non-comment line must be:
 
-1. **Trusted domains** (below): infrastructure the VM needs to function —
-   package repos, CA cert endpoint.  All HTTP methods and paths are allowed.
-   Edit these only when changing system-level dependencies.
+    METHOD https://hostname/path/pattern
 
-2. **User rules** (allowlist.txt): per-method, per-URL patterns that grant
-   access to specific endpoints.  Each non-blank, non-comment line must be:
-
-       METHOD https://hostname/path/pattern
-
-   Wildcards (*) are allowed only in the path, not in the hostname.
-   The filter reloads the file automatically when it changes.
+Wildcards (*) are allowed only in the path, not in the hostname.
+The filter reloads the file automatically when it changes.
 """
 
 import json
@@ -23,26 +17,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from mitmproxy import http
-
-# ── Trusted domains ─────────────────────────────────────────────────
-# Full-domain allowlist for system infrastructure.  Patterns are
-# matched with re.fullmatch against the request hostname.
-TRUSTED_DOMAINS: list[str] = [
-    # OS package repos — scoped to actual apt hostnames
-    r".*\.debian\.org",
-    "archive.ubuntu.com",
-    "security.ubuntu.com",
-    "ports.ubuntu.com",
-    r".*\.archive\.ubuntu\.com",
-    # Python package repos
-    "pypi.org",
-    r".*\.pypi\.org",
-    "files.pythonhosted.org",
-    # mitmproxy's magic domain that serves the CA cert
-    "mitm.it",
-]
-
-_trusted = [re.compile(p) for p in TRUSTED_DOMAINS]
 
 # ── Paths ───────────────────────────────────────────────────────────
 ALLOWLIST_PATH = Path(__file__).parent / "allowlist.txt"
@@ -109,13 +83,9 @@ def is_allowed(
 ) -> bool:
     """Return True if the request is permitted.
 
-    Checks trusted domains first (all methods/paths allowed), then user
-    rules.  A ``GET`` rule implicitly allows ``HEAD`` requests to the
-    same URL pattern.
+    A ``GET`` rule implicitly allows ``HEAD`` requests to the same URL
+    pattern.
     """
-    if any(p.fullmatch(host) for p in _trusted):
-        return True
-
     req_path = urlparse(url).path or "/"
 
     for rule_method, url_pattern in rules:
