@@ -307,6 +307,31 @@ def test_curl_https_pypi_org(running_vm):
     )
 
 
+def test_docker_hello_world(running_vm):
+    """docker run hello-world should pull the image and print the greeting.
+
+    Exercises the Docker daemon's proxy configuration (systemd service
+    override) and the Docker Hub allowlist rules.  The daemon pulls the
+    image through mitmproxy, then runs the container locally.
+    """
+    _progress("Running docker hello-world (includes image pull)…")
+    result = _vm_ssh(
+        "sudo docker run hello-world 2>&1",
+        timeout=180,
+    )
+    if result.returncode != 0:
+        _dump_logs()
+        pytest.fail(
+            f"docker run hello-world failed (rc={result.returncode})\n"
+            f"stdout: {result.stdout[:1000]}\n"
+            f"stderr: {result.stderr[:1000]}"
+        )
+    assert "Hello from Docker!" in result.stdout, (
+        f"Expected 'Hello from Docker!' in output.\n"
+        f"stdout: {result.stdout[:1000]}"
+    )
+
+
 def test_blocked_domain(running_vm):
     """Requests to domains not in filter.py's allowlist should be blocked with 403."""
     result = _vm_ssh(
