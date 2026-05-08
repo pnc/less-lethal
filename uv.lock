@@ -6,10 +6,6 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
-[options]
-exclude-newer = "2026-04-11T02:09:05.342972377Z"
-exclude-newer-span = "PT0S"
-
 [[package]]
 name = "agent-vm"
 version = "0.1.0"

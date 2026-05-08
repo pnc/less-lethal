@@ -35,6 +35,11 @@ curl -fL https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-unk
 
 No sudo is required to run the VM or the test suite.
 
+**Running tests inside a VM (nested):** If you are running the e2e
+tests from inside the VM itself, uncomment the Debian cloud image
+offloader rules in `allowlist.txt` — the image download redirects to
+hosts outside `*.debian.org` that are blocked by default.
+
 ## Running the tests
 
 ```bash
