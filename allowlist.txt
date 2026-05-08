@@ -13,6 +13,30 @@
 #   POST https://api.github.com/repos/myorg/myrepo/issues
 #   GET  https://api.openweathermap.org/data/2.5/weather
 
+# ── mitmproxy CA certificate ───────────────────────────────────────
+# Magic domain served by mitmproxy over plain HTTP.  The guest
+# fetches the CA cert at boot before any HTTPS traffic.
+GET http://mitm.it/cert/pem
+
+# ── OS package repos (Debian) ─────────────────────────────────────
+# The VM runs Debian.  deb.debian.org is the primary apt CDN (Fastly).
+# cloud.debian.org hosts cloud image checksums (large files redirect
+# to offloaders — see the "Debian cloud images" section below).
+GET https://deb.debian.org/*
+GET https://security.debian.org/*
+GET https://cloud.debian.org/*
+
+# ── OS package repos (Ubuntu — uncomment if using an Ubuntu image) ─
+# GET https://archive.ubuntu.com/*
+# GET https://security.ubuntu.com/*
+# GET https://ports.ubuntu.com/*
+# If your Ubuntu mirror is a geo subdomain (e.g. us.archive.ubuntu.com),
+# add it here — domain wildcards are not supported.
+
+# ── Python package repos ──────────────────────────────────────────
+GET https://pypi.org/*
+GET https://files.pythonhosted.org/*
+
 # ── Claude Code ────────────────────────────────────────────────────
 # Anthropic API — scoped to the v1 API prefix so only API calls are
 # permitted, not arbitrary requests to the domain.
@@ -24,17 +48,41 @@ GET  https://api.anthropic.com/v1/*
 GET https://api.anthropic.com/api/*
 POST https://api.anthropic.com/api/*
 
-# Claude Code binary downloads from Google Cloud Storage.  GET-only
-# to prevent POST-based exfiltration.  Scoped to the known Anthropic
-# release bucket; paths vary by version and platform.
+# Claude Code binary downloads from Google Cloud Storage. Scoped
+# to the known Anthropic release bucket; paths vary by version and platform.
 GET https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/*
 GET https://downloads.claude.ai/claude-code-releases/*
 GET https://api.anthropic.com/api/hello
 
 # ── uv (Python package manager) ───────────────────────────────────
 # Installer script and binary download.  The install script lives at
-# astral.sh and redirects to a GitHub release asset whose URL varies
-# by version and platform.
+# astral.sh; binary downloads come from releases.astral.sh (or GitHub
+# release assets as a fallback).  URLs vary by version and platform.
 GET https://astral.sh/uv/install.sh
+GET https://releases.astral.sh/github/uv/releases/*
 GET https://github.com/astral-sh/uv/releases/*
 GET https://release-assets.githubusercontent.com/github-production-release-asset/*
+
+# ── Docker Hub ────────────────────────────────────────────────────
+# Registry API — paths vary by image name, tag, and sha256 digest
+# (e.g. /v2/library/hello-world/manifests/latest).  Scoped to /v2/.
+GET  https://registry-1.docker.io/v2/*
+# Auth tokens — the registry returns 401 with a token URL whose
+# query parameters vary per request (scope, service, etc.).
+GET https://auth.docker.io/token*
+# Blob storage — the registry redirects layer downloads to this
+# Cloudflare R2 bucket.  Paths contain per-blob sha256 digests.
+GET https://docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com/registry-v2/*
+
+# ── Debian cloud images (nested VM testing only) ──────────────────
+# Only needed when running the e2e test suite inside a VM (i.e. the
+# tests boot a nested QEMU guest).  See HACKING.md for details.
+# cloud.debian.org (*.debian.org, already trusted) serves checksums
+# directly but 302-redirects large files (qcow2) to offloader hosts
+# at Umea University.  The offloader is deterministic per-URL (hash),
+# so different images may hit different hosts.  Paths vary by arch,
+# release, and date.
+# GET https://gemmei.ftp.acc.umu.se/images/cloud/*
+# GET https://saimei.ftp.acc.umu.se/images/cloud/*
+# GET https://laotzu.ftp.acc.umu.se/images/cloud/*
+# GET https://chuangtzu.ftp.acc.umu.se/images/cloud/*

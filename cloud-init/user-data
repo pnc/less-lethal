@@ -5,6 +5,7 @@ users:
     lock_passwd: true
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
+    groups: docker, kvm
     ssh_authorized_keys:
       - __SSH_PUB_KEY__
 
@@ -52,6 +53,16 @@ write_files:
     content: |
       #!/bin/sh
       printf '\n\033]8;;%s\a%s\033]8;;\a\n\n' "$1" "$1"
+
+  # Docker daemon proxy configuration.  write_files runs before the
+  # packages stage, so this override is already in place when docker.io
+  # is installed and systemd first loads the docker.service unit.
+  - path: /etc/systemd/system/docker.service.d/proxy.conf
+    content: |
+      [Service]
+      Environment="HTTP_PROXY=http://__HOST_IP__:__PROXY_PORT__"
+      Environment="HTTPS_PROXY=http://__HOST_IP__:__PROXY_PORT__"
+      Environment="NO_PROXY=localhost,127.0.0.1,__HOST_IP__"
 
   - path: /etc/systemd/system/mnt-9p.mount
     content: |
@@ -144,11 +155,12 @@ write_files:
       >     POST https://api.anthropic.com/v1/*
       >     GET  https://api.anthropic.com/v1/*
 
-      ## Trusted infrastructure (always allowed)
+      ## Default allowlist
 
-      Package repos (debian.org, ubuntu.com, pypi.org) and the
-      mitmproxy CA endpoint (mitm.it) are trusted at the proxy level
-      and need no allowlist rules.
+      Package repos (deb.debian.org, pypi.org), the mitmproxy CA
+      endpoint (mitm.it), and other infrastructure are included in the
+      default allowlist.txt.  All network access is governed by that
+      single file — there are no hidden trusted domains.
 
   - path: /etc/systemd/system/home-vm-shared.service
     content: |
@@ -169,6 +181,7 @@ packages:
   - curl
   - bindfs
   - git
+  - docker.io
 
 runcmd:
   - mkdir -p /mnt/9p /home/vm/shared

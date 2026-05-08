@@ -262,7 +262,7 @@ def test_cloud_init_success(running_vm):
         if "status: error" in r.stdout:
             pytest.fail(f"cloud-init finished with errors:\n{r.stdout}")
         time.sleep(10)
-    pytest.fail("cloud-init did not complete within 300s")
+    pytest.fail("cloud-init did not complete within 600s")
 
 
 def test_curl_http_pypi_org(running_vm):
@@ -303,6 +303,31 @@ def test_curl_https_pypi_org(running_vm):
         )
     assert "PyPI" in result.stdout, (
         f"'PyPI' not found in HTTPS curl output.\n"
+        f"stdout: {result.stdout[:1000]}"
+    )
+
+
+def test_docker_hello_world(running_vm):
+    """docker run hello-world should pull the image and print the greeting.
+
+    Exercises the Docker daemon's proxy configuration (systemd service
+    override) and the Docker Hub allowlist rules.  The daemon pulls the
+    image through mitmproxy, then runs the container locally.
+    """
+    _progress("Running docker hello-world (includes image pull)…")
+    result = _vm_ssh(
+        "docker run hello-world 2>&1",
+        timeout=180,
+    )
+    if result.returncode != 0:
+        _dump_logs()
+        pytest.fail(
+            f"docker run hello-world failed (rc={result.returncode})\n"
+            f"stdout: {result.stdout[:1000]}\n"
+            f"stderr: {result.stderr[:1000]}"
+        )
+    assert "Hello from Docker!" in result.stdout, (
+        f"Expected 'Hello from Docker!' in output.\n"
         f"stdout: {result.stdout[:1000]}"
     )
 
