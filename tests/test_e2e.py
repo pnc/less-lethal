@@ -706,9 +706,15 @@ def test_kernel_install_and_reboot(running_vm):
 
     Placed last because it reboots the VM.
     """
-    _progress("Installing cloud kernel flavor…")
+    # Detect guest architecture to pick the right cloud kernel package.
+    r = _vm_ssh("dpkg --print-architecture", timeout=10)
+    assert r.returncode == 0
+    arch = r.stdout.strip()
+    cloud_pkg = f"linux-image-cloud-{arch}"
+
+    _progress(f"Installing {cloud_pkg}…")
     r = _vm_ssh(
-        "bash -lc 'sudo apt-get install -y -qq linux-image-cloud-arm64 2>&1'",
+        f"bash -lc 'sudo apt-get install -y -qq {cloud_pkg} 2>&1'",
         timeout=300,
     )
     assert r.returncode == 0, (
@@ -717,7 +723,7 @@ def test_kernel_install_and_reboot(running_vm):
     )
 
     # Find the newly installed cloud kernel version.
-    r = _vm_ssh("ls /boot/vmlinuz-*-cloud-arm64", timeout=10)
+    r = _vm_ssh(f"ls /boot/vmlinuz-*-cloud-{arch}", timeout=10)
     assert r.returncode == 0, f"No cloud kernel found in /boot:\n{r.stderr}"
     cloud_vmlinuz = r.stdout.strip().splitlines()[-1].strip()
     cloud_version = cloud_vmlinuz.rsplit("/", 1)[-1].removeprefix("vmlinuz-")
