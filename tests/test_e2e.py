@@ -676,3 +676,112 @@ def test_guest_cannot_modify_host_allowlist(running_vm):
         _vm_ssh(f"rm -f ~/shared/{marker} 2>/dev/null; true", timeout=10)
         # Safety net: restore original content in case the test failed
         allowlist_path.write_text(original_content)
+
+
+# ---------------------------------------------------------------------------
+# Kernel upgrade + reboot
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_install_and_reboot(running_vm):
+    """Installing a new kernel and rebooting must not kernel panic.
+
+    The base cloud-init config once diverted update-initramfs to /bin/true
+    to speed up provisioning (~2 min saved under TCG emulation).  This was
+    safe under the assumption that the VM was ephemeral and never rebooted.
+    In practice, Debian's unattended-upgrades installs kernel security
+    updates on a daily timer.  Because update-initramfs was a no-op, the
+    new kernel shipped without an initramfs.  GRUB's os-prober still picked
+    up the new vmlinuz and made it the default boot entry — but with no
+    initrd line.  On next boot the kernel couldn't load the virtio_blk
+    module (it lives in the initramfs, not built-in), so the root disk was
+    invisible and the kernel panicked:
+
+        VFS: Cannot open root device "PARTUUID=..." or unknown-block(0,0)
+        Kernel panic - not syncing: VFS: Unable to mount root fs
+
+    This test reproduces that scenario end-to-end: install a second kernel
+    flavor, set GRUB to boot it, and reboot.  If update-initramfs is broken,
+    the VM kernel-panics and SSH never comes back.
+
+    Placed last because it reboots the VM.
+    """
+    _progress("Installing cloud kernel flavor…")
+    r = _vm_ssh(
+        "bash -lc 'sudo apt-get install -y -qq linux-image-cloud-arm64 2>&1'",
+        timeout=300,
+    )
+    assert r.returncode == 0, (
+        f"Kernel install failed (rc={r.returncode}):\n"
+        f"{r.stdout[-2000:]}\n{r.stderr[-2000:]}"
+    )
+
+    # Find the newly installed cloud kernel version.
+    r = _vm_ssh("ls /boot/vmlinuz-*-cloud-arm64", timeout=10)
+    assert r.returncode == 0, f"No cloud kernel found in /boot:\n{r.stderr}"
+    cloud_vmlinuz = r.stdout.strip().splitlines()[-1].strip()
+    cloud_version = cloud_vmlinuz.rsplit("/", 1)[-1].removeprefix("vmlinuz-")
+    _progress(f"Installed cloud kernel: {cloud_version}")
+
+    # Verify the initramfs was created for it.
+    r = _vm_ssh(f"test -f /boot/initrd.img-{cloud_version}", timeout=10)
+    assert r.returncode == 0, (
+        f"initrd.img-{cloud_version} was not created.\n"
+        "update-initramfs is likely diverted to /bin/true."
+    )
+
+    # Set GRUB to boot the cloud kernel by default.
+    grub_entry = f"gnulinux-advanced-e82711d0-3a02-4e17-9f90-2f275b0368c5>gnulinux-{cloud_version}-advanced-e82711d0-3a02-4e17-9f90-2f275b0368c5"
+    _vm_ssh(
+        f"sudo grub-set-default '{grub_entry}' 2>&1",
+        timeout=10,
+    )
+    # Alternatively, just make sure it's the default (newest) entry.
+    _vm_ssh("sudo update-grub 2>&1", timeout=60)
+
+    # Verify GRUB config has an initrd line for the cloud kernel.
+    r = _vm_ssh("cat /boot/grub/grub.cfg", timeout=10)
+    assert f"initrd\t/boot/initrd.img-{cloud_version}" in r.stdout, (
+        f"GRUB config missing initrd for {cloud_version}."
+    )
+
+    _progress("Rebooting into cloud kernel…")
+    _vm_ssh("sudo reboot", timeout=10)
+
+    # Wait for SSH to go down.
+    time.sleep(10)
+
+    # Wait for SSH to come back — if the kernel panicked, it never will.
+    deadline = time.monotonic() + BOOT_TIMEOUT
+    attempt = 0
+    while time.monotonic() < deadline:
+        if running_vm.poll() is not None:
+            _dump_logs()
+            pytest.fail(
+                "QEMU exited during reboot — likely kernel panic.\n"
+                "Check console log above."
+            )
+        attempt += 1
+        remaining = int(deadline - time.monotonic())
+        _progress(f"Post-reboot SSH probe #{attempt} ({remaining}s remaining)…")
+        try:
+            r = _vm_ssh("true", timeout=10)
+            if r.returncode == 0:
+                _progress(f"VM back after reboot ({attempt} probe(s))")
+                break
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(SSH_POLL_INTERVAL)
+    else:
+        _dump_logs()
+        pytest.fail(
+            f"VM did not come back after reboot within {BOOT_TIMEOUT}s.\n"
+            "Likely kernel panic due to missing initramfs."
+        )
+
+    # Confirm we're running the new kernel.
+    r = _vm_ssh("uname -r", timeout=10)
+    _progress(f"Running kernel after reboot: {r.stdout.strip()}")
+    assert "cloud" in r.stdout, (
+        f"Expected to boot cloud kernel, got: {r.stdout.strip()}"
+    )

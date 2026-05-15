@@ -21,12 +21,18 @@ bootcmd:
         wget -qO /usr/local/share/ca-certificates/mitmproxy.crt http://mitm.it/cert/pem
       update-ca-certificates
     fi
-  # Disable initramfs rebuilds — this is an ephemeral VM that is never
-  # rebooted.  The generic kernel's mkinitramfs takes 2+ minutes under
-  # TCG because it copies hundreds of driver modules.
-  - dpkg-divert --local --rename --add /usr/sbin/update-initramfs
-  - ln -sf /bin/true /usr/sbin/update-initramfs
-
+  # Suppress initramfs rebuilds during first-boot provisioning only.
+  # Package installs (docker.io, etc.) trigger the initramfs-tools dpkg
+  # hook, and a full rebuild takes minutes under TCG emulation.  The
+  # diversion is undone in runcmd so that future kernel upgrades (via
+  # unattended-upgrades) generate a working initramfs.
+  # Guard: boot-finished is written at the very end of cloud-init's final
+  # stage, so it won't exist during first boot but will on all subsequent.
+  - |
+    if [ ! -f /var/lib/cloud/instance/boot-finished ]; then
+      dpkg-divert --local --rename --add /usr/sbin/update-initramfs 2>/dev/null
+      ln -sf /bin/true /usr/sbin/update-initramfs
+    fi
 write_files:
   - path: /etc/apt/apt.conf.d/90proxy
     content: |
@@ -184,6 +190,14 @@ packages:
   - docker.io
 
 runcmd:
+  # Undo the update-initramfs diversion applied during first-boot
+  # provisioning (see bootcmd).  From this point on, kernel upgrades
+  # will generate a proper initramfs.
+  - |
+    if dpkg-divert --list /usr/sbin/update-initramfs 2>/dev/null | grep -q diversion; then
+      rm -f /usr/sbin/update-initramfs
+      dpkg-divert --local --rename --remove /usr/sbin/update-initramfs
+    fi
   - mkdir -p /mnt/9p /home/vm/shared
   - systemctl daemon-reload
   - systemctl enable --now mnt-9p.mount
