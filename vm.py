@@ -494,44 +494,68 @@ def _ssh_args(ssh_host_port: int = SSH_HOST_PORT) -> list[str]:
     ]
 
 
+def _stream_console(console: Path, pos: int) -> int:
+    """Print new console.log content to stderr. Returns new file position."""
+    try:
+        with open(console, "r", errors="replace") as f:
+            f.seek(pos)
+            new = f.read()
+            if new:
+                print(new, end="", file=sys.stderr, flush=True)
+            return f.tell()
+    except OSError:
+        return pos
+
+
 def _wait_for_ssh(ssh_host_port: int, qemu_proc: subprocess.Popen,
-                  timeout: int = 300) -> None:
-    """Poll SSH until the VM accepts connections, or exit on timeout/crash."""
-    deadline = time.monotonic() + timeout
+                  timeout: int = 300, console_after: float = 5.0) -> None:
+    """Poll SSH until the VM accepts connections, or exit on timeout/crash.
+
+    After *console_after* seconds, streams console.log to stderr so boot
+    progress (or failures like kernel panics) is visible immediately.
+    """
+    console = STATE_DIR / "console.log"
+    start = time.monotonic()
+    deadline = start + timeout
+    console_pos = 0
+    streaming = False
     attempt = 0
     while time.monotonic() < deadline:
         if qemu_proc.poll() is not None:
-            # Dump console log tail to help debug.
-            console = STATE_DIR / "console.log"
-            if console.exists():
-                tail = console.read_text(errors="replace")[-2048:]
-                print(f"\n--- last console output ---\n{tail}", file=sys.stderr)
+            _stream_console(console, console_pos)
             sys.exit(
-                f"QEMU exited prematurely (rc={qemu_proc.returncode}). "
+                f"\nQEMU exited prematurely (rc={qemu_proc.returncode}). "
                 "Check .vm/console.log for details."
             )
+        elapsed = time.monotonic() - start
+        if not streaming and elapsed >= console_after:
+            streaming = True
+            print("\n  --- boot log (streaming) ---", file=sys.stderr)
+        if streaming:
+            console_pos = _stream_console(console, console_pos)
         attempt += 1
         remaining = int(deadline - time.monotonic())
-        print(f"\r  Waiting for SSH... attempt {attempt} ({remaining}s remaining)  ",
-              end="", flush=True)
+        if not streaming:
+            print(f"\r  Waiting for SSH... attempt {attempt} ({remaining}s remaining)  ",
+                  end="", flush=True)
         try:
             r = subprocess.run(
-                [*_ssh_args(ssh_host_port), "-o", "ConnectTimeout=5", "true"],
-                capture_output=True, timeout=10,
+                [*_ssh_args(ssh_host_port), "-o", "ConnectTimeout=2", "true"],
+                capture_output=True, timeout=5,
             )
             if r.returncode == 0:
+                if streaming:
+                    console_pos = _stream_console(console, console_pos)
+                    print(f"\n  --- end boot log ---", file=sys.stderr)
                 print(f"\r  SSH ready after {attempt} attempt(s).{'':30}")
                 return
         except subprocess.TimeoutExpired:
             pass
-        time.sleep(10)
+        time.sleep(2)
 
-    console = STATE_DIR / "console.log"
-    if console.exists():
-        tail = console.read_text(errors="replace")[-2048:]
-        print(f"\n--- last console output ---\n{tail}", file=sys.stderr)
+    _stream_console(console, console_pos)
     sys.exit(
-        f"VM did not become SSH-accessible within {timeout}s. "
+        f"\nVM did not become SSH-accessible within {timeout}s. "
         "Check .vm/console.log for boot output."
     )
 
