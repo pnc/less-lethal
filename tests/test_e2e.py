@@ -181,7 +181,7 @@ def running_vm():
     # vm.py start runs mitmproxy in the background and QEMU in the foreground.
     # Both inherit our file handles, so their output lands in console.log.
     vm_proc = subprocess.Popen(
-        [sys.executable, str(VM_PY), "start", "--memory", "512M",
+        [sys.executable, str(VM_PY), "start", "--memory", "2G",
          "--ssh-port", str(TEST_SSH_PORT),
          "--proxy-port", str(TEST_PROXY_PORT),
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
@@ -349,15 +349,20 @@ def test_claude_code_installed(running_vm):
     r = _vm_ssh("bash -lc 'claude --version'", timeout=30)
     if r.returncode != 0:
         diag = _vm_ssh(
-            "bash -lc 'ls -la ~/.local/bin/claude 2>&1; "
-            "ls ~/.local/share/claude/versions/ 2>&1; "
-            "echo PATH=$PATH'",
+            "bash -lc '"
+            "echo \"=== binary ===\"; ls -la ~/.local/bin/claude 2>&1; "
+            "echo \"=== versions ===\"; ls ~/.local/share/claude/versions/ 2>&1; "
+            "echo \"=== file ===\"; file $(readlink -f ~/.local/bin/claude) 2>&1; "
+            "echo \"=== ldd ===\"; ldd $(readlink -f ~/.local/bin/claude) 2>&1; "
+            "echo \"=== dmesg ===\"; sudo dmesg | tail -20 2>&1; "
+            "echo \"=== free ===\"; free -h 2>&1; "
+            "echo \"=== PATH ===\"; echo PATH=$PATH'",
             timeout=10,
         )
         assert False, (
             f"claude not installed or not on PATH (rc={r.returncode}):\n"
             f"stderr: {r.stderr[:500]}\n"
-            f"diagnostics:\n{diag.stdout[:1000]}"
+            f"diagnostics:\n{diag.stdout[:2000]}"
         )
     output = (r.stdout + r.stderr).lower()
     assert "claude" in output, (
