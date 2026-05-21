@@ -4,8 +4,9 @@
 
 ## Development workflow
 
-Before running the e2e tests, ensure the test prerequisites from
-HACKING.md are installed.
+The e2e tests run inside this VM. If `uv` is not yet installed, install
+it first (see Tooling policy below). Ensure the test prerequisites from
+HACKING.md are also installed.
 
 Always run the test suite before committing:
 

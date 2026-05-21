@@ -332,6 +332,40 @@ def test_docker_hello_world(running_vm):
     )
 
 
+def test_uv_installed(running_vm):
+    """uv should be installed and functional after cloud-init provisioning."""
+    _progress("Checking uv installation…")
+    r = _vm_ssh("bash -lc 'uv --version'", timeout=30)
+    assert r.returncode == 0, (
+        f"uv not installed or not on PATH (rc={r.returncode}):\n"
+        f"stdout: {r.stdout[:500]}\nstderr: {r.stderr[:500]}"
+    )
+    assert "uv" in r.stdout, f"Unexpected uv --version output: {r.stdout}"
+
+
+def test_claude_code_installed(running_vm):
+    """Claude Code CLI should be installed and functional after cloud-init provisioning."""
+    _progress("Checking Claude Code installation…")
+    r = _vm_ssh("bash -lc 'claude --version'", timeout=30)
+    if r.returncode != 0:
+        diag = _vm_ssh(
+            "bash -lc 'ls -la ~/.local/bin/claude 2>&1; "
+            "ls ~/.local/share/claude/versions/ 2>&1; "
+            "echo PATH=$PATH'",
+            timeout=10,
+        )
+        assert False, (
+            f"claude not installed or not on PATH (rc={r.returncode}):\n"
+            f"stderr: {r.stderr[:500]}\n"
+            f"diagnostics:\n{diag.stdout[:1000]}"
+        )
+    output = (r.stdout + r.stderr).lower()
+    assert "claude" in output, (
+        f"Unexpected claude --version output:\n"
+        f"stdout: {r.stdout!r}\nstderr: {r.stderr!r}"
+    )
+
+
 def test_blocked_domain(running_vm):
     """Requests to domains not in filter.py's allowlist should be blocked with 403."""
     result = _vm_ssh(
