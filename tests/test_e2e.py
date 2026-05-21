@@ -737,12 +737,19 @@ def test_kernel_install_and_reboot(running_vm):
     )
 
     # Set GRUB to boot the cloud kernel by default.
-    grub_entry = f"gnulinux-advanced-e82711d0-3a02-4e17-9f90-2f275b0368c5>gnulinux-{cloud_version}-advanced-e82711d0-3a02-4e17-9f90-2f275b0368c5"
+    # Read the root filesystem UUID from the running VM rather than
+    # hardcoding a PARTUUID that is specific to one image build.
+    r = _vm_ssh(
+        "sudo grub-probe --target=fs_uuid /",
+        timeout=10,
+    )
+    assert r.returncode == 0, f"Cannot determine root FS UUID:\n{r.stderr}"
+    root_uuid = r.stdout.strip()
+    grub_entry = f"gnulinux-advanced-{root_uuid}>gnulinux-{cloud_version}-advanced-{root_uuid}"
     _vm_ssh(
         f"sudo grub-set-default '{grub_entry}' 2>&1",
         timeout=10,
     )
-    # Alternatively, just make sure it's the default (newest) entry.
     _vm_ssh("sudo update-grub 2>&1", timeout=60)
 
     # Verify GRUB config has an initrd line for the cloud kernel.
