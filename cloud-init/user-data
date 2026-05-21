@@ -70,6 +70,13 @@ write_files:
       Environment="HTTPS_PROXY=http://__HOST_IP__:__PROXY_PORT__"
       Environment="NO_PROXY=localhost,127.0.0.1,__HOST_IP__"
 
+  # The default MODULES=most copies hundreds of bare-metal drivers into
+  # the initramfs.  Under TCG emulation this takes minutes.  MODULES=dep
+  # limits it to modules for detected hardware (virtio), cutting the
+  # rebuild from ~5 min to seconds.
+  - path: /etc/initramfs-tools/conf.d/vm-modules-dep
+    content: |
+      MODULES=dep
   - path: /etc/systemd/system/mnt-9p.mount
     content: |
       [Unit]

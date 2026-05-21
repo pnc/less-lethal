@@ -715,7 +715,7 @@ def test_kernel_install_and_reboot(running_vm):
     _progress(f"Installing {cloud_pkg}…")
     r = _vm_ssh(
         f"bash -lc 'sudo apt-get install -y -qq {cloud_pkg} 2>&1'",
-        timeout=300,
+        timeout=600,
     )
     assert r.returncode == 0, (
         f"Kernel install failed (rc={r.returncode}):\n"
