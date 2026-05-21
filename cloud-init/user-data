@@ -221,8 +221,27 @@ runcmd:
   # from /etc/profile.d/proxy.sh).  --no-modify-path because proxy.sh
   # already adds ~/.local/bin to PATH.  Binary lands in /home/vm/.local/bin/.
   - su - vm -c 'curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path'
-  # Install Claude Code CLI.
-  - su - vm -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  # Install Claude Code CLI.  The official install script downloads the
+  # binary then runs `claude install` to create the symlink — but that
+  # subcommand maps ~70 GB of virtual memory and gets OOM-killed in
+  # small VMs.  Instead, download the binary directly and place it
+  # ourselves.
+  - |
+    su - vm -c '
+      set -e
+      DOWNLOAD_BASE="https://downloads.claude.ai/claude-code-releases"
+      case "$(uname -m)" in
+        x86_64|amd64) platform="linux-x64" ;;
+        aarch64|arm64) platform="linux-arm64" ;;
+        *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+      esac
+      version=$(curl -fsSL "$DOWNLOAD_BASE/latest")
+      mkdir -p ~/.local/share/claude/versions ~/.local/bin
+      curl -fsSL -o ~/.local/share/claude/versions/"$version" \
+        "$DOWNLOAD_BASE/$version/$platform/claude"
+      chmod +x ~/.local/share/claude/versions/"$version"
+      ln -sf ~/.local/share/claude/versions/"$version" ~/.local/bin/claude
+    '
   # Propagate the host user's git identity into the VM so commits
   # made inside the guest have the correct author.  The placeholders
   # are substituted by vm.py from `git config --global`; if the host
