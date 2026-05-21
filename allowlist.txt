@@ -59,20 +59,27 @@ GET https://api.anthropic.com/api/hello
 # astral.sh; binary downloads come from releases.astral.sh (or GitHub
 # release assets as a fallback).  URLs vary by version and platform.
 GET https://astral.sh/uv/install.sh
+GET https://releases.astral.sh/installers/uv/*
 GET https://releases.astral.sh/github/uv/releases/*
 GET https://github.com/astral-sh/uv/releases/*
 GET https://release-assets.githubusercontent.com/github-production-release-asset/*
 
-# ── Docker Hub ────────────────────────────────────────────────────
-# Registry API — paths vary by image name, tag, and sha256 digest
-# (e.g. /v2/library/hello-world/manifests/latest).  Scoped to /v2/.
-GET  https://registry-1.docker.io/v2/*
-# Auth tokens — the registry returns 401 with a token URL whose
-# query parameters vary per request (scope, service, etc.).
+# ── Docker Hub (hello-world only) ─────────────────────────────────
+# Scoped to the library/hello-world image used by the e2e test.
+# To pull other images, add their specific paths here.
+# /v2/ (bare) is Docker's registry version check — required before
+# any image pull.
+GET  https://registry-1.docker.io/v2/
+GET  https://registry-1.docker.io/v2/library/hello-world/*
+# Auth tokens — scoped to the hello-world repository.
 GET https://auth.docker.io/token*
-# Blob storage — the registry redirects layer downloads to this
-# Cloudflare R2 bucket.  Paths contain per-blob sha256 digests.
+# Blob storage — the registry redirects layer downloads to either
+# a Cloudflare R2 bucket or CloudFront CDN.  Blob paths contain
+# sha256 digests that can't be scoped per-image, but the registry
+# only returns redirect URLs for layers belonging to images the
+# client already resolved via the scoped manifest rules above.
 GET https://docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com/registry-v2/*
+GET https://production.cloudfront.docker.com/registry-v2/*
 
 # ── Debian cloud images (nested VM testing only) ──────────────────
 # Only needed when running the e2e test suite inside a VM (i.e. the
