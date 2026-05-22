@@ -166,7 +166,7 @@ class DarwinBackend(Backend):
         if self.arch == Arch.ARM64:
             cpu = "host" if self._accel == "hvf" else "cortex-a57"
             return ["-machine", f"virt,accel={self._accel}", "-cpu", cpu]
-        cpu = "host" if self._accel == "hvf" else "qemu64"
+        cpu = "host" if self._accel == "hvf" else "max"
         return ["-machine", f"q35,accel={self._accel}", "-cpu", cpu]
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
@@ -200,7 +200,7 @@ class LinuxBackend(Backend):
         if self.arch == Arch.ARM64:
             cpu = "host" if self._accel == "kvm" else "cortex-a57"
             return ["-machine", f"virt,accel={self._accel}", "-cpu", cpu]
-        cpu = "host" if self._accel == "kvm" else "qemu64"
+        cpu = "host" if self._accel == "kvm" else "max"
         return ["-machine", f"q35,accel={self._accel}", "-cpu", cpu]
 
     def prepare_efi(self, state_dir: Path) -> tuple[Path, Path]:
