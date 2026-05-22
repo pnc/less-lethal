@@ -16,6 +16,24 @@ uv run pytest tests/test_e2e.py -v -s
 
 The test boots the VM end-to-end (takes ~90s without KVM) and verifies `curl https://pypi.org` works through mitmproxy. Do not commit if this fails.
 
+### Fixing CI failures
+
+When a test fails in CI but passes locally, **reproduce the failure locally
+before applying a fix.** This VM has KVM, but CI may not — one known
+divergence is the QEMU CPU model (`-cpu host` with KVM vs `-cpu max` with
+TCG). To match CI's TCG environment:
+
+```bash
+QEMU_ACCEL=tcg uv run pytest tests/test_e2e.py::test_that_failed -v -s
+```
+
+The workflow is:
+
+1. **Reproduce** — run the failing test under CI-like conditions and confirm it fails.
+2. **Fix** — apply the change.
+3. **Verify** — re-run under the same conditions and confirm it passes.
+4. **Full suite** — run the complete test suite to check for regressions.
+
 The full suite including the network isolation tests can take 5+ minutes under TCG emulation. TCG is slower than KVM but not *that* slow — if cloud-init status is unchanged for more than a minute, check the console log and process list rather than assuming it's just slow. A dead QEMU process or OOM kill is more likely than TCG being the bottleneck.
 
 Launch the test with `Bash` using `run_in_background: true`, then immediately attach a `Monitor` to tail the output file with a progress filter. This keeps the conversation unblocked while streaming results:
