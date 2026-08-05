@@ -49,6 +49,17 @@ Exit the SSH session to stop the VM. Other useful commands:
 ./vm.py reset          # destroy ephemeral state, keep base image
 ```
 
+VM resources default to 4 GB of RAM, 4 virtual CPUs, and a 20 GB disk, and can
+be overridden at start:
+
+```bash
+./vm.py start --memory 8G --cpus 8 --disk-size 40G
+```
+
+`--memory` and `--cpus` apply on every start. `--disk-size` only applies when
+the overlay disk is created, so changing it requires a `./vm.py reset` first —
+`vm.py` prints a note if you pass a size that doesn't match the existing disk.
+
 No sudo is required — network isolation uses QEMU's built-in slirp stack with `restrict=on`. Serial console output is logged to `.vm/console.log`. Files in `shared/` on the host appear at `~/shared` inside the guest.
 
 ## Network filter

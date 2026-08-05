@@ -33,6 +33,12 @@ CURL_TIMEOUT = 60    # seconds for the curl command itself
 TEST_PROXY_PORT = 8091
 TEST_SSH_PORT = 2223
 
+# Passed explicitly to `vm.py start` so the CPU/disk flags are exercised.
+# TEST_DISK_SIZE is deliberately not vm.py's default so a regression that
+# ignores --disk-size shows up as a size mismatch inside the guest.
+TEST_CPUS = 4
+TEST_DISK_SIZE = "12G"
+
 # Module-level start time, set once the VM starts booting.
 _t0: float = 0.0
 
@@ -182,6 +188,8 @@ def running_vm():
     # Both inherit our file handles, so their output lands in console.log.
     vm_proc = subprocess.Popen(
         [sys.executable, str(VM_PY), "start", "--memory", "512M",
+         "--cpus", str(TEST_CPUS),
+         "--disk-size", TEST_DISK_SIZE,
          "--ssh-port", str(TEST_SSH_PORT),
          "--proxy-port", str(TEST_PROXY_PORT),
          "--extra-user-data", str(REPO / "tests" / "nmap.yaml")],
@@ -263,6 +271,26 @@ def test_cloud_init_success(running_vm):
             pytest.fail(f"cloud-init finished with errors:\n{r.stdout}")
         time.sleep(10)
     pytest.fail("cloud-init did not complete within 600s")
+
+
+def test_cpus_and_disk_size_flags(running_vm):
+    """`--cpus` and `--disk-size` must shape the guest's virtual hardware.
+
+    /dev/vda is the qcow2 overlay: it is the first virtio drive vm.py
+    passes to QEMU (the seed ISO comes second).
+    """
+    r = _vm_ssh("nproc")
+    assert r.stdout.strip() == str(TEST_CPUS), (
+        f"guest reports {r.stdout.strip()!r} CPUs, expected {TEST_CPUS}\n"
+        f"stderr: {r.stderr[:500]}"
+    )
+
+    r = _vm_ssh("lsblk -bdno SIZE /dev/vda")
+    expected_bytes = 12 * 1024 ** 3  # TEST_DISK_SIZE
+    assert r.stdout.strip() == str(expected_bytes), (
+        f"guest disk is {r.stdout.strip()!r} bytes, expected {expected_bytes} "
+        f"({TEST_DISK_SIZE})\nstderr: {r.stderr[:500]}"
+    )
 
 
 def test_curl_http_pypi_org(running_vm):

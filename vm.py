@@ -8,8 +8,10 @@
 
 import argparse
 import hashlib
+import json
 import os
 import platform
+import re
 import signal
 import shutil
 import subprocess
@@ -24,6 +26,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROXY_PORT: int = 8090
 SSH_HOST_PORT: int = 2222
+MEMORY: str = "4G"
+CPUS: int = 4
+DISK_SIZE: str = "20G"
 STATE_DIR: Path = Path(os.environ["VM_STATE_DIR"]) if "VM_STATE_DIR" in os.environ \
     else SCRIPT_DIR / ".vm"                  # ephemeral state, nuked on reset
 IMAGES_DIR: Path = SCRIPT_DIR / ".images"  # persistent download cache (base image)
@@ -237,6 +242,35 @@ def _brew_prefix() -> Path:
 # Platform-independent helpers
 # ---------------------------------------------------------------------------
 
+_SIZE_UNITS = {None: 1, "k": 1 << 10, "m": 1 << 20,
+               "g": 1 << 30, "t": 1 << 40, "p": 1 << 50}
+_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmgtp])?(?:i?b)?$", re.IGNORECASE)
+
+
+def _parse_size(size: str) -> int | None:
+    """Parse a QEMU-style size ('20G', '512M', '1024') into bytes.
+
+    Returns None if the string isn't in a form we understand, so callers
+    can skip size comparisons rather than guessing.
+    """
+    m = _SIZE_RE.match(size.strip())
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = _SIZE_UNITS[m.group(2).lower() if m.group(2) else None]
+    if value <= 0:
+        return None
+    return int(value * unit)
+
+
+def _format_size(num_bytes: int) -> str:
+    """Format bytes back into compact QEMU notation ('20G', '512M')."""
+    for suffix, unit in (("T", 1 << 40), ("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)):
+        if num_bytes >= unit and num_bytes % unit == 0:
+            return f"{num_bytes // unit}{suffix}"
+    return str(num_bytes)
+
+
 def _indent(text: str, n: int) -> str:
     """Indent every line of *text* by *n* spaces."""
     prefix = " " * n
@@ -344,14 +378,40 @@ def ensure_base_image(backend: Backend) -> None:
         print("Image checksum verified.")
 
 
-def ensure_disk() -> None:
+def _disk_virtual_size(disk: Path) -> int | None:
+    """Return the qcow2 overlay's virtual size in bytes, or None if unknown."""
+    r = subprocess.run(["qemu-img", "info", "--output=json", str(disk)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    try:
+        return int(json.loads(r.stdout)["virtual-size"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def ensure_disk(disk_size: str = DISK_SIZE) -> None:
     disk = STATE_DIR / "disk.qcow2"
     if not disk.exists():
-        print("Creating VM disk...")
+        print(f"Creating VM disk ({disk_size})...")
         base = IMAGES_DIR / "base.qcow2"
         subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", "-b", str(base), "-F", "qcow2", str(disk), "20G"],
+            ["qemu-img", "create", "-f", "qcow2", "-b", str(base), "-F", "qcow2",
+             str(disk), disk_size],
             check=True,
+        )
+        return
+
+    # The disk is only sized at creation time.  If the caller asked for a
+    # different size, say so instead of silently ignoring the flag.
+    wanted = _parse_size(disk_size)
+    actual = _disk_virtual_size(disk)
+    if wanted is not None and actual is not None and wanted != actual:
+        print(
+            f"Note: existing disk is {_format_size(actual)}; "
+            f"--disk-size {disk_size} takes effect after `vm.py reset` "
+            f"(which destroys the VM's disk and SSH key).",
+            file=sys.stderr,
         )
 
 
@@ -411,12 +471,13 @@ def build_seed_iso(backend: Backend, extra_user_data: Path | None = None) -> Non
         _build_iso(tmp, seed)
 
 
-def build_qemu_args(backend: Backend, memory: str) -> list[str]:
+def build_qemu_args(backend: Backend, memory: str = MEMORY,
+                    cpus: int = CPUS) -> list[str]:
     disk = STATE_DIR / "disk.qcow2"
     seed = STATE_DIR / "seed.iso"
 
     args = backend.machine_args + [
-        "-m", memory, "-smp", "1",
+        "-m", memory, "-smp", str(cpus),
         "-nographic",
         "-drive", f"file={disk},if=virtio",
         "-drive", f"file={seed},if=virtio,media=cdrom",
@@ -576,13 +637,13 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     ensure_ssh_key()
     ensure_base_image(backend)
-    ensure_disk()
+    ensure_disk(disk_size=args.disk_size)
     extra = Path(args.extra_user_data) if args.extra_user_data else None
     build_seed_iso(backend, extra_user_data=extra)
 
     mitm = start_mitmproxy(proxy_port=backend.proxy_port)
 
-    qemu_args = build_qemu_args(backend, memory=args.memory)
+    qemu_args = build_qemu_args(backend, memory=args.memory, cpus=args.cpus)
 
     if interactive:
         # Background QEMU with serial output to file, then drop into SSH.
@@ -652,6 +713,17 @@ def cmd_reset(args: argparse.Namespace) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _positive_int(value: str) -> int:
+    """argparse type for counts that must be >= 1."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
+    return n
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Agent VM — sandboxed Debian VM with mitmproxy traffic control.",
@@ -661,8 +733,18 @@ def main() -> None:
 
     start_p = sub.add_parser("start", help="Start mitmproxy and QEMU")
     start_p.add_argument(
-        "--memory", default="4G", metavar="SIZE",
-        help="RAM to give the VM, in QEMU notation (default: 4G)",
+        "--memory", default=MEMORY, metavar="SIZE",
+        help=f"RAM to give the VM, in QEMU notation (default: {MEMORY})",
+    )
+    start_p.add_argument(
+        "--cpus", default=CPUS, type=_positive_int, metavar="N",
+        help=f"Number of virtual CPUs to give the VM (default: {CPUS})",
+    )
+    start_p.add_argument(
+        "--disk-size", default=DISK_SIZE, metavar="SIZE",
+        help=f"Virtual size of the VM disk, in QEMU notation "
+             f"(default: {DISK_SIZE}).  Only applied when .vm/disk.qcow2 is "
+             f"created — run `vm.py reset` first to resize an existing disk.",
     )
     start_p.add_argument(
         "--extra-user-data", metavar="FILE",
